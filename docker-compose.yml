@@ -1,0 +1,19 @@
+services:
+  local-bash:
+    build: .
+    image: local-dev-tools
+    command: ["python3", "bash_mcp_server.py"]
+    volumes:
+      - ${PROJECT_DIR}:/workspace
+    network_mode: none
+    stdin_open: true
+    tty: false
+
+  local-git:
+    build: .
+    image: local-dev-tools
+    command: ["uvx", "mcp-server-git", "--repository", "/workspace"]
+    volumes:
+      - ${PROJECT_DIR}:/workspace
+    stdin_open: true
+    tty: false
