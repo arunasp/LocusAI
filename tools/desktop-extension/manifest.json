@@ -1,0 +1,38 @@
+{
+  "manifest_version": "0.4",
+  "name": "locusai-local-bash",
+  "display_name": "LocusAI Local Bash",
+  "version": "1.0.0",
+  "description": "Allowlisted, containerized bash execution against a mounted project directory. No shell string is ever accepted -- callers supply a binary name plus an argv list, run with shell=False.",
+  "author": {
+    "name": "Arunas Pranckevicius"
+  },
+  "server": {
+    "type": "binary",
+    "entry_point": "mcp-run.sh",
+    "mcp_config": {
+      "command": "${__dirname}/mcp-run.sh",
+      "args": ["local-bash"],
+      "env": {
+        "PROJECT_DIR": "${user_config.workspace_directory}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "run_command",
+      "description": "Run one allowlisted binary with an argv list inside the mounted project directory. No shell is invoked."
+    }
+  ],
+  "user_config": {
+    "workspace_directory": {
+      "type": "directory",
+      "title": "LocusAI project directory",
+      "description": "The directory to mount at /workspace inside the container.",
+      "required": true
+    }
+  },
+  "compatibility": {
+    "platforms": ["win32", "linux"]
+  }
+}
