@@ -1,0 +1,10 @@
+# Windows Zone.Identifier alternate-data-stream metadata (created when
+# downloading files via a browser)
+*:Zone.Identifier
+
+# Python
+__pycache__/
+*.pyc
+
+# Local env overrides, if any ever get created by hand
+.env
