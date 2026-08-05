@@ -8,3 +8,7 @@ __pycache__/
 
 # Local env overrides, if any ever get created by hand
 .env
+
+# Built Desktop extension bundle -- regenerate via
+# tools/desktop-extension: npx --yes @anthropic-ai/mcpb pack . dist/...
+tools/desktop-extension/dist/*.mcpb

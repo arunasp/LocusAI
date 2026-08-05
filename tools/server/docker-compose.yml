@@ -3,17 +3,14 @@ services:
     build: .
     image: local-dev-tools
     command: ["python3", "bash_mcp_server.py"]
+    environment:
+      MCP_PORT: "1443"
+    ports:
+      # Bound to 127.0.0.1 explicitly, not 0.0.0.0 -- WSL2's own
+      # localhost-forwarding already keeps this off the LAN by
+      # default, but binding explicitly is the correct belt-and-
+      # braces choice rather than relying on that alone.
+      - "127.0.0.1:1443:1443"
     volumes:
       - ${PROJECT_DIR}:/workspace
-    network_mode: none
-    stdin_open: true
-    tty: false
-
-  local-git:
-    build: .
-    image: local-dev-tools
-    command: ["uvx", "mcp-server-git", "--repository", "/workspace"]
-    volumes:
-      - ${PROJECT_DIR}:/workspace
-    stdin_open: true
-    tty: false
+    restart: unless-stopped

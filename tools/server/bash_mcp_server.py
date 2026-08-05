@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Allowlisted command-execution MCP server.
+"""Allowlisted command-execution MCP server -- streamable-HTTP transport.
 
-Thin service script: this file owns only what's specific to the
-bash-tools service (the allowlist, timeout, tool schema). Execution
-logic lives in lib/common.py, shared with any future Python MCP
-service -- same relationship as a sysvinit script calling into
-/lib/lsb/init-functions instead of reimplementing start/stop logic.
+Runs as a persistent service (docker compose up -d, not run --rm),
+listening on TCP so a Windows-side Claude Desktop can reach it via
+WSL2's automatic localhost port forwarding -- confirmed real, not
+assumed: a container publishing a port inside WSL2 is reachable from
+Windows as localhost:<port> with zero extra configuration. The only
+thing crossing the OS boundary is a plain HTTP request (via
+mcp-remote on the Desktop side) -- no wsl.exe, no WSLENV, no bash
+script execution across OSes at all.
 """
 
+import os
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -17,14 +21,16 @@ from lib.common import run_allowlisted
 WORKDIR = Path("/workspace")
 TIMEOUT_SECONDS = 30
 
-# Extend only with binaries you have actually reviewed. Anything not
-# listed here is refused before subprocess ever runs.
 ALLOWED_BINARIES = frozenset({
     "ls", "cat", "grep", "find", "wc", "head", "tail",
     "python3", "pip", "pytest",
 })
 
-mcp = FastMCP("bash-tools")
+mcp = FastMCP(
+    "bash-tools",
+    host="0.0.0.0",
+    port=int(os.environ.get("MCP_PORT", "1443")),
+)
 
 
 @mcp.tool()
@@ -41,4 +47,4 @@ def run_command(binary: str, args: list[str]) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run()  # stdio transport
+    mcp.run(transport="streamable-http")

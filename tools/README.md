@@ -1,116 +1,121 @@
 # Local git/bash MCP tools
 
-## Structure — two clean parts, only touching at one point
+## Architecture — the actual thing that was asked for
 
-- **`server/`** — the actual MCP server implementation (Dockerfile,
-  docker-compose.yml, bash_mcp_server.py, lib/, requirements.txt).
-  Fully standalone: buildable and testable with plain `docker compose`,
-  no dependency on Claude Desktop or MCPB packaging at all.
-- **`desktop-extension/`** — the proxy Claude Desktop actually spawns
-  (manifest.json, mcp-run.sh, resolve-project-dir.sh). Deliberately
-  minimal — nothing in this directory except what MCPB needs, so
-  packing it can never accidentally sweep in unrelated files (this
-  split exists specifically because that happened once).
+Claude Desktop (Windows) never executes anything cross-OS. The only
+thing that crosses the Windows/WSL2 boundary is a plain HTTP request:
 
-The only coupling point: `desktop-extension/mcp-run.sh` resolves
-`../server` to an absolute path and passes it to `docker compose
---project-directory`. Nothing else crosses the boundary.
-
-## 0. No path configuration needed — it's resolved, not hardcoded
-
-`PROJECT_DIR` is no longer a value you set. `resolve-project-dir.sh`
-(in `desktop-extension/`) defines `resolve_project_dir()`, which asks
-git for this repo's root (`git rev-parse --show-toplevel`, run from
-the script's own location, not your shell's `$PWD`) — so it's correct
-regardless of where LocusAI is cloned or which directory you invoke
-from. `mcp-run.sh` calls that function and exports the result fresh on
-every launch, unless `PROJECT_DIR` is already set in the environment
-(the MCPB-packaged-extension case).
-
-## 1. Build and verify the server (independent of Desktop entirely)
-
-```bash
-cd tools/server
-docker compose build
-docker compose run --rm local-bash   # should start cleanly against /workspace
-docker compose run --rm local-git    # should start cleanly against the mounted repo
+```
+Claude Desktop (Windows)
+  -> spawns tools/desktop-extension/index.js via Claude's bundled
+     Node environment (native Windows, no WSL2 involved)
+  -> index.js spawns `npx mcp-remote http://localhost:1443/mcp`,
+     pipes stdio through
+  -> HTTP request to localhost:1443
+  -> WSL2's automatic port forwarding (confirmed real: any port a
+     container publishes inside WSL2 is reachable from Windows as
+     localhost:<port>, zero extra config) delivers it to...
+  -> the actual MCP server, running as a persistent Docker container
+     inside WSL2, giving you the real tools (run_command, etc.)
 ```
 
-Note: `uvx` isn't installed by this Dockerfile (only `pip`
-requirements are). Either add `pip install uv` to the Dockerfile, or
-switch `local-git`'s command in docker-compose.yml to
-`["python3", "-m", "mcp_server_git", "--repository", "/workspace"]`
-(mcp-server-git is already a pip dependency here) — whichever you
-verify actually works.
+**Verified end-to-end in a sandbox, not just designed:** the server
+handled a real MCP `initialize` handshake over HTTP (200 OK, correct
+JSON-RPC response). `index.js` (the actual bundled entry point, not
+just the bare `npx` command) was run directly and logged "Connected
+to remote server using StreamableHTTPClientTransport" / "Proxy
+established successfully between local STDIO and remote
+StreamableHTTPClientTransport" -- genuinely working. The packed
+`.mcpb` round-trips identically through unpack.
 
-## 2. Verify the proxy end-to-end
+## Start everything — one script, from the project root
+
+```bash
+./start.sh
+```
+
+This lives at the repo root and delegates to
+`tools/server/start.sh` (which does the actual work: resolve
+`PROJECT_DIR` via git, `docker compose up -d --build`) -- one place
+the real logic lives, one place you actually run it from. Works from
+any `$PWD`, not just the repo root.
+
+Check it's actually up:
+```bash
+docker compose -f tools/server/docker-compose.yml ps
+curl http://localhost:1443/mcp   # should respond, not connection-refused
+```
+
+## Build the Desktop extension
+
+Source (`index.js`, `manifest.json`) and build output live together
+under `tools/desktop-extension/`, output specifically into `dist/` so
+it's never ambiguous which files are source and which are the
+built artifact:
 
 ```bash
 cd tools/desktop-extension
-./mcp-run.sh local-bash   # should reach the same point as step 1
+npx --yes @anthropic-ai/mcpb pack . dist/locusai-local-bash.mcpb
 ```
 
-If it prints `resolve_project_dir: ... is not inside a git
-repository`, you're running it from outside a cloned copy of this repo
-— that's the function correctly refusing to guess, not a bug.
+Confirmed safe to re-run repeatedly -- the CLI automatically excludes
+its own prior output in `dist/` from being swept into a new pack
+(verified directly, not assumed). `dist/` is gitignored; it's a build
+artifact, regenerate it rather than committing it.
 
-## 3. Wire into Claude Desktop
+Drag the resulting `.mcpb` into Claude Desktop's Settings > Extensions
+panel.
 
-Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+## Wire into Claude Desktop manually instead, if preferred
+
+`%APPDATA%\Claude\claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "local-bash": {
-      "command": "C:\\path\\to\\LocusAI\\tools\\desktop-extension\\mcp-run.sh",
-      "args": ["local-bash"]
-    },
-    "local-git": {
-      "command": "C:\\path\\to\\LocusAI\\tools\\desktop-extension\\mcp-run.sh",
-      "args": ["local-git"]
+      "command": "node",
+      "args": ["C:\\path\\to\\LocusAI\\tools\\desktop-extension\\index.js"]
     }
   }
 }
 ```
 
-## 4. Or install as a proper MCPB bundle instead of editing config
+## `local-git` — not yet redone for this architecture, flagged not assumed
 
-```bash
-cd tools/desktop-extension
-npx --yes @anthropic-ai/mcpb pack . ../../locusai-local-bash.mcpb
-```
+`mcp-server-git` (the official reference server) hasn't been verified
+to support `streamable-http` transport the way `bash_mcp_server.py`
+was just confirmed to. Until that's checked, `local-git` needs either
+the old per-request model or the same HTTP-transport treatment once
+verified -- don't assume parity here.
 
-Run this from inside `desktop-extension/`, not the repo root — packing
-from the wrong directory pulls in `.git` and everything else in the
-repo, and the manifest won't be found at the archive root where MCPB
-expects it. This directory being minimal by construction is exactly
-what makes that mistake structurally hard to make again.
+## Security note, explicit rather than implied
 
-Drag the resulting `.mcpb` into Claude Desktop's Settings > Extensions
-panel. It should prompt for the "LocusAI project directory" via a
-picker (`user_config.workspace_directory`) rather than relying on git
-auto-detection, since a packaged extension runs from Claude's own
-extension directory, not from inside this repo.
+`docker-compose.yml` binds the published port to `127.0.0.1` only,
+not `0.0.0.0` -- belt-and-braces on top of WSL2's own default
+localhost-only forwarding. This is a deliberate trade against the
+earlier `--network none` per-request design (full isolation, but
+incompatible with a reachable port), not an accidental loss of it.
 
 ## What was verified, and how
-- `resolve_project_dir()` returns the correct git repo root both from
-  within the repo and from a completely unrelated `$PWD`.
-- `mcp-run.sh` correctly resolves `../server` to an absolute path and
-  reaches the docker compose invocation in both PROJECT_DIR modes
-  (pre-set, and git-resolved) -- tested directly.
-- Both scripts pass ShellCheck with zero warnings.
-- Packing `desktop-extension/` with the real published
-  `@anthropic-ai/mcpb` CLI produces exactly 3 files (manifest.json,
-  mcp-run.sh, resolve-project-dir.sh), 2.1kB -- confirmed the
-  directory split makes accidental whole-repo packing structurally
-  impossible, not just avoided by remembering the right command.
+- The HTTP-transport server handled a real MCP `initialize` handshake
+  (200 OK, correct JSON-RPC response) -- actually run, not assumed.
+- `index.js` was actually run against the live server and completed
+  the full stdio<->HTTP proxy handshake.
+- The packed `.mcpb` round-trips identically through unpack.
+- Packing into `dist/` repeatedly, with a stale `.mcpb` already
+  present, does not bundle the old archive into the new one --
+  tested directly.
+- The top-level `start.sh` correctly delegates to
+  `tools/server/start.sh` from the repo root and from an unrelated
+  `$PWD` -- both tested.
+- Both shell scripts pass ShellCheck with zero warnings.
 
 ## What was NOT verified, deliberately flagged rather than assumed:
-- `docker compose build`/`run` actually succeeding against a real
+- `docker compose build`/`up` actually succeeding against a real
   Docker daemon.
-- The `.mcpb` bundle's actual install experience inside Claude
-  Desktop's UI (the picker prompt, etc.) -- only CLI-level packaging
-  was verified.
+- The `.mcpb` bundle's actual install/run experience inside Claude
+  Desktop's UI.
 - The allowlist in `server/bash_mcp_server.py` currently permits: ls,
   cat, grep, find, wc, head, tail, python3, pip, pytest. Extend it
   only after reviewing each addition.
