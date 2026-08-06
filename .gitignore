@@ -12,3 +12,14 @@ __pycache__/
 # Built Desktop extension bundle -- regenerate via
 # tools/desktop-extension: npx --yes @anthropic-ai/mcpb pack . dist/...
 tools/desktop-extension/dist/*.mcpb
+
+# Runtime debug trace written by tools/desktop-extension/index.js,
+# next to itself rather than a per-user temp/AppData path -- see the
+# comment in index.js for why.
+tools/desktop-extension/debug.log
+
+# npm dependencies for the desktop extension (currently just
+# mcp-remote, bundled into the .mcpb rather than fetched via npx at
+# launch -- see index.js). package.json and the generated
+# package-lock.json ARE committed; only the installed tree isn't.
+tools/desktop-extension/node_modules/

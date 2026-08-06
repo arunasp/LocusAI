@@ -1,0 +1,10 @@
+{
+  "name": "locusai-local-bash-desktop-extension",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Desktop-extension entry point for LocusAI's local-bash MCP proxy. Bundles mcp-remote as a real dependency rather than fetching it via npx at launch time, per MCPB's own guidance to bundle all dependencies and work offline.",
+  "main": "index.js",
+  "dependencies": {
+    "mcp-remote": "^0.1.38"
+  }
+}

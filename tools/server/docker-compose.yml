@@ -1,8 +1,17 @@
+# Do NOT run `docker compose`/`docker-compose` directly against this file.
+# Always go through tools/server/start.sh (or tools/pipeline.sh server) --
+# it does two things a raw `up -d` skips: (1) resolves and exports
+# PROJECT_DIR so the volume mount isn't empty, and (2) `compose rm -sf`
+# before `up -d` to clear the existing container first. Recreating an
+# existing container in place hits docker-compose v1's `KeyError:
+# 'ContainerConfig'` bug (docker/compose#11742) whenever the image was
+# rebuilt with BuildKit -- confirmed recurring live when this file was
+# invoked directly instead of through start.sh.
 services:
   local-bash:
     build: .
     image: local-dev-tools
-    command: ["python3", "bash_mcp_server.py"]
+    command: ["python3", "/app/bash_mcp_server.py"]
     environment:
       MCP_PORT: "1443"
     ports:

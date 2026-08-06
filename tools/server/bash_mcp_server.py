@@ -16,15 +16,16 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from lib.common import run_allowlisted
+from lib.common import FileAllowlist, run_allowlisted
 
 WORKDIR = Path("/workspace")
 TIMEOUT_SECONDS = 30
 
-ALLOWED_BINARIES = frozenset({
-    "ls", "cat", "grep", "find", "wc", "head", "tail",
-    "python3", "pip", "pytest",
-})
+# Lives under the /workspace bind mount (this repo checkout), not the
+# image's COPY'd /app layer -- editing tools/server/allowlist.txt on
+# the host takes effect on the next request, no rebuild or restart.
+# See FileAllowlist in lib/common.py.
+ALLOWED_BINARIES = FileAllowlist(WORKDIR / "tools" / "server" / "allowlist.txt")
 
 mcp = FastMCP(
     "bash-tools",

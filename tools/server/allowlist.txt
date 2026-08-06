@@ -1,0 +1,35 @@
+# Binaries the MCP bash proxy (bash_mcp_server.py) is permitted to run
+# inside /workspace. One name per line; blank lines and '#' comments
+# are ignored.
+#
+# This file lives under the /workspace bind mount, not the image's
+# COPY'd /app layer -- edit it on the host and FileAllowlist (see
+# lib/common.py) picks up the change on the next request, by mtime,
+# with no container rebuild or restart needed.
+
+ls
+cat
+grep
+find
+wc
+head
+tail
+python3
+pip
+pytest
+
+# git: needed so a push/pull can go through this proxy instead of
+# requiring shell access on the WSL2 host directly. No narrower than
+# python3/pip above -- those already permit arbitrary code execution,
+# so gating git to specific subcommands wouldn't raise the actual
+# security ceiling, just add friction.
+git
+
+# chmod: needed because file-edit tools that write into /workspace
+# from outside the container (Filesystem MCP, remote edits) don't
+# preserve or set the execute bit -- see start.sh and build.sh, both
+# of which needed a manual chmod +x after being edited that way. This
+# is the live test of the allowlist config actually refreshing: add
+# the line, no container restart, next run_command('chmod', ...) call
+# just works.
+chmod
