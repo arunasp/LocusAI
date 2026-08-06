@@ -25,6 +25,13 @@ pytest
 # security ceiling, just add friction.
 git
 
+# gh: GitHub CLI, added 2026-08-06 alongside the ssh deploy-key mount
+# and image-level gh install (see Dockerfile) -- Arunas's auth split:
+# git push/pull goes over ssh, everything else (PRs, issues, releases)
+# goes through gh's own token (GH_TOKEN, see docker-compose.yml). Same
+# reasoning as git above: no narrower than what's already allowlisted.
+gh
+
 # chmod: needed because file-edit tools that write into /workspace
 # from outside the container (Filesystem MCP, remote edits) don't
 # preserve or set the execute bit -- see start.sh and build.sh, both
