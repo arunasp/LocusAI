@@ -492,17 +492,28 @@ incompatible with a reachable port), not an accidental loss of it.
   ssh using a read-only-mounted deploy key
   (`~/.ssh/github` on the host → `/root/.ssh/github_deploy_key` in the
   container, per `docker-compose.yml`); everything else (PRs, issues,
-  releases) goes through `gh`'s own token via `GH_TOKEN`. Set
-  `GH_TOKEN` in the launching shell or in a gitignored `.env` next to
-  `docker-compose.yml` -- never commit a real token there. GitHub's
-  published ed25519 host key is pinned in the image's
-  `/root/.ssh/known_hosts` (verified against GitHub's own docs
-  2026-08-06) rather than trusted on first use -- deliberately only
-  the ed25519 entry, with `HostKeyAlgorithms ssh-ed25519` in
-  `/root/.ssh/config` to match. Never mount the whole `~/.ssh`
-  directory into this container -- it also exposes the allowlisted
-  `run_command` execution surface above, so only the one key meant
-  for this purpose goes in.
+  releases) goes through `gh`'s own token via `GH_TOKEN`. `GH_TOKEN`
+  is extracted automatically -- `start.sh` runs
+  `tools/server/ensure-auth-data.sh` before every build/up, mirroring
+  opencode-model-eval's `ensure-auth-data.sh`/`extract-opencode-key.sh`
+  pattern: if `tools/server/.env` doesn't exist yet, it calls
+  `extract-github-token.sh`, which runs `gh auth token` on the host
+  (your existing `gh auth login` session -- no separate token to
+  generate or paste) and writes a gitignored `tools/server/.env`
+  (`chmod 600`), which `docker compose` auto-loads from that
+  directory. Never commit a real token there. The same pre-flight
+  also defends the ssh key mount against Docker's phantom-mount bug
+  (a bind-mount source that doesn't exist yet gets silently created
+  as an empty directory owned by root) -- confirmed as a real,
+  recurring issue for this same bind-mount class in
+  opencode-model-eval. GitHub's published ed25519 host key is pinned
+  in the image's `/root/.ssh/known_hosts` (verified against GitHub's
+  own docs 2026-08-06) rather than trusted on first use --
+  deliberately only the ed25519 entry, with
+  `HostKeyAlgorithms ssh-ed25519` in `/root/.ssh/config` to match.
+  Never mount the whole `~/.ssh` directory into this container -- it
+  also exposes the allowlisted `run_command` execution surface above,
+  so only the one key meant for this purpose goes in.
 - `tools/pipeline.sh` run for real, end-to-end, against this repo's own
   checkout on 2026-08-05 (`tools/pipeline.sh all`): `lint`, `test`,
   `build`, `server`, and `verify` all `[PASS]`. This surfaced and fixed

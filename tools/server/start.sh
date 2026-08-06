@@ -27,6 +27,13 @@ PROJECT_DIR="$(resolve_project_dir)"
 export PROJECT_DIR
 
 cd "${script_dir}"
+
+# Compose has no precondition hook (confirmed for this same v1 CLI in
+# opencode-model-eval), so this pre-flight -- phantom-mount-dir defense
+# for the ssh key + auto-extracting GH_TOKEN if missing -- runs here
+# explicitly rather than relying on compose to trigger it.
+"${script_dir}/ensure-auth-data.sh"
+
 echo "Building..." >&2
 compose build
 
