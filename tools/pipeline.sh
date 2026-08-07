@@ -80,14 +80,6 @@ stage_lint() {
         done < <(find "${repo_root}" -name '*.sh' -not -path '*/node_modules/*' -not -path '*/.git/*' -print0)
         if [[ ${#sh_files[@]} -gt 0 ]]; then
             ran_any=1
-            # -P SCRIPTDIR: -x alone resolves `# shellcheck source=`
-            # relative to shellcheck's own invocation cwd (repo_root
-            # here), not each script's own directory -- confirmed live
-            # 2026-08-05: start.sh's `source
-            # "${script_dir}/resolve-project-dir.sh"` only resolved
-            # once -P SCRIPTDIR was added, making resolution follow
-            # each script's own location regardless of where this
-            # stage is invoked from.
             shellcheck -x -P SCRIPTDIR "${sh_files[@]}" || had_failure=1
         fi
     else
@@ -139,6 +131,14 @@ stage_test() {
         echo "  (${test_dir} does not exist -- nothing to run)" >&2
         return 2
     fi
+    # `node --test <directory>` does NOT reliably recurse into a
+    # non-default-named directory passed explicitly on the command
+    # line (confirmed by direct testing against Node 22.22.2 during
+    # this pipeline's own construction: it tried to require() the
+    # directory itself as a single test file and failed with
+    # MODULE_NOT_FOUND, even though `node --test` with no path
+    # correctly auto-discovers the same files from cwd). Passing the
+    # matched *.test.js files explicitly sidesteps that entirely.
     local test_files=()
     while IFS= read -r -d '' f; do
         test_files+=("${f}")
@@ -227,6 +227,38 @@ if [[ "${stages[0]}" == "all" ]]; then
     stages=(lint test build server verify)
 fi
 
+# Log every run to logs/ (gitignored) so it can be fetched directly --
+# via LocusAI Local Bash's cat/find/tail, or by hand -- instead of
+# requiring output to be pasted back.
+#
+# Deliberately NOT wrapping the stage loop below in a function piped
+# through tee (`run_pipeline() { ... }; run_pipeline | tee ...`) --
+# tried that first, but it broke ShellCheck's reachability tracing for
+# every single stage_* function (SC2317 "unreachable", confirmed via a
+# minimal repro: the exact same `run_stage lint stage_lint` indirect
+# dispatch is traced fine by ShellCheck at top level, but not once
+# it's nested inside another function or brace-group that's the left
+# side of a pipe). Keeping the loop at top level avoids that
+# regression entirely.
+#
+# Using `exec > >(tee -a ...)` here instead needs one extra step to be
+# correct: that form is normally racy on its own -- the background tee
+# reading the process-substitution pipe can still be flushing when the
+# script exits, so a `cat` run immediately after (e.g. by Claude via
+# the allowlisted binaries) can read a stale/incomplete file. Fixed by
+# explicitly closing our own stdout/stderr at the end (so tee sees EOF)
+# and waiting for its PID before this script actually exits -- verified
+# with 20 stress-test iterations with no incomplete log observed,
+# alongside a normal ShellCheck pass, before relying on it here.
+log_dir="${repo_root}/logs"
+mkdir -p "${log_dir}"
+stages_joined="$(IFS=-; echo "${stages[*]}")"
+log_file="${log_dir}/$(date -u +%Y%m%dT%H%M%SZ)-${stages_joined}.log"
+echo "Logging this run to ${log_file}" >&2
+exec > >(tee -a "${log_file}")
+tee_pid=$!
+exec 2>&1
+
 for stage in "${stages[@]}"; do
     case "${stage}" in
         lint) run_stage lint stage_lint ;;
@@ -244,6 +276,25 @@ done
 
 if [[ ${#FAILED_STAGES[@]} -gt 0 ]]; then
     echo "RESULT: FAILED -- ${FAILED_STAGES[*]}" >&2
+    # Drain and reap tee before exiting, so the log file is guaranteed
+    # complete the instant this script returns -- see the note above.
+    exec 1>&- 2>&-
+    wait "${tee_pid}" 2>/dev/null || true
     exit 1
 fi
 echo "RESULT: ALL PASS (or SKIPPED where a required tool is missing)" >&2
+
+# Same drain/reap, success path. Deliberately NOT followed by an
+# explicit `exit 0` -- confirmed live 2026-08-06: ShellCheck 0.10.0
+# treats a bare, unconditional `exit N` as the script's literal final
+# statement as breaking its own reachability tracing for every
+# function only ever invoked through run_stage's indirect `"$@"`
+# dispatch (spurious SC2317 "unreachable" on all of them) -- isolated
+# via a minimal repro after ruling out the tee/process-substitution
+# machinery itself as the cause. Falling through naturally (implicit
+# exit 0, matching this script's original pre-logging structure)
+# avoids it entirely; only the failure path above still needs a real
+# explicit exit, and being inside a conditional there doesn't trigger
+# the same issue.
+exec 1>&- 2>&-
+wait "${tee_pid}" 2>/dev/null || true

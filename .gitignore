@@ -23,3 +23,17 @@ tools/desktop-extension/debug.log
 # launch -- see index.js). package.json and the generated
 # package-lock.json ARE committed; only the installed tree isn't.
 tools/desktop-extension/node_modules/
+
+# CI/CD and host-session scratch. logs/ IS the expected place for this
+# (pipeline output, ad hoc host-tool drops like a stale Claude Code
+# changelog.md copy or a project-directory backup) -- it's the
+# directory itself that's intentional, never its contents. Ignored
+# wholesale rather than picking specific patterns: this has already
+# caught a real Claude Code session transcript
+# (~/.claude/projects/.../*.jsonl, left behind by a Remote
+# Control/GUI-SSH session running directly on the WSL2 host, entirely
+# outside this repo's Docker container and its allowlist -- a
+# different, unrestricted access path from tools/server's LocusAI
+# Local Bash proxy) and a broken/empty backup tarball, 2026-08-07.
+# Neither should ever reach a commit.
+logs/
