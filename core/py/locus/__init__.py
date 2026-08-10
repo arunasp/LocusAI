@@ -6,6 +6,7 @@ declarative (competition-bounded, retrieval-destabilising).
 """
 
 from locus.commit import Cascade, Stage
+from locus.constitution import Constitution
 from locus.episodic import NoveltyGate
 from locus.graph import AssociativeGraph
 from locus.pathways import Dispatcher, Outcome
@@ -16,6 +17,7 @@ __all__ = [
     "AssociativeGraph",
     "Cascade",
     "Consolidator",
+    "Constitution",
     "Dispatcher",
     "NoveltyGate",
     "Outcome",

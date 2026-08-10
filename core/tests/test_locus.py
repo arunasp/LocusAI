@@ -7,8 +7,8 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "py"))
 
 from locus import (  # noqa: E402
-    AssociativeGraph, Cascade, Consolidator, Dispatcher, NoveltyGate,
-    Pathway, Restabilize, Stage, Store, Tier,
+    AssociativeGraph, Cascade, Consolidator, Constitution, Dispatcher,
+    NoveltyGate, Pathway, Restabilize, Stage, Store, Tier,
 )
 
 
@@ -417,6 +417,84 @@ class StochasticCompetitionTest(unittest.TestCase):
             act = [0.2, 0.4, 0.6, 0.8, 1.0]
             self.assertEqual(store.kwta(act, 2, temp=0.7, seed=42),
                              store.kwta(act, 2, temp=0.7, seed=42))
+
+
+class ConstitutionTest(unittest.TestCase):
+    """The constitution supplies cost; it never picks an action."""
+
+    def setUp(self):
+        self.con = Constitution(
+            costs={"note": 1.0, "publish": 0.3, "delete_backups": 0.05},
+            forbidden=("erase_history",),
+        )
+
+    def test_declared_cost_is_returned_verbatim(self):
+        self.assertEqual(self.con.reversibility("publish"), 0.3)
+
+    def test_unclassified_act_is_expensive_not_free(self):
+        """Silence is not permission: an unnamed act costs the most."""
+        self.assertEqual(self.con.reversibility("something_new"), 0.05)
+        self.assertLess(
+            self.con.reversibility("something_new"),
+            self.con.reversibility("note"),
+        )
+
+    def test_cost_raises_the_bar_the_cascade_demands(self):
+        """The whole mechanism: values never choose, they make acts steep."""
+        cascade = Cascade()
+        cheap = self.con.reversibility("note")
+        grave = self.con.reversibility("delete_backups")
+        self.assertLess(
+            cascade.commit_threshold(cheap),
+            cascade.commit_threshold(grave),
+        )
+        self.assertLess(
+            cascade.required_signals(cheap),
+            cascade.required_signals(grave),
+        )
+
+    def test_evidence_commits_a_cheap_act_but_not_a_grave_one(self):
+        cascade = Cascade()
+        evidence, signals = 0.9, 4
+        self.assertIs(
+            cascade.stage(evidence, self.con.reversibility("note"), signals),
+            Stage.COMMIT,
+        )
+        self.assertIsNot(
+            cascade.stage(evidence,
+                          self.con.reversibility("delete_backups"),
+                          signals),
+            Stage.COMMIT,
+        )
+
+    def test_forbidden_is_categorical_not_scaled(self):
+        """No evidence clears it, unlike a cost which enough evidence does."""
+        self.assertFalse(self.con.permits("erase_history"))
+        self.assertTrue(self.con.permits("publish"))
+        self.assertTrue(self.con.permits("never_mentioned"))
+
+    def test_forbidden_act_may_not_also_carry_a_cost(self):
+        """A price on a refusal invites the reading that evidence buys it."""
+        with self.assertRaises(ValueError):
+            Constitution(costs={"x": 0.5}, forbidden=("x",))
+
+    def test_declared_costs_are_validated(self):
+        with self.assertRaises(ValueError):
+            Constitution(costs={"x": 1.5})
+
+    def test_the_bound_layer_cannot_rewrite_what_binds_it(self):
+        """No setter, and the stored mappings are read-only proxies."""
+        with self.assertRaises(TypeError):
+            self.con.costs["publish"] = 1.0
+        with self.assertRaises(AttributeError):
+            self.con.costs = {}
+        self.assertNotIn("add", dir(self.con.forbidden))
+
+    def test_construction_copies_so_later_edits_do_not_leak_in(self):
+        source = {"note": 1.0}
+        con = Constitution(costs=source)
+        source["note"] = 0.0
+        self.assertEqual(con.reversibility("note"), 1.0)
 
 
 if __name__ == "__main__":
