@@ -1,48 +1,43 @@
 #!/usr/bin/env node
 // Entry point for the LocusAI Local Bash Desktop extension.
 //
-// Runs mcp-remote's own compiled CLI entry (bundled as a real dependency
-// of this extension, see package.json) IN-PROCESS via a dynamic
-// import(), rather than spawning it as a child process. This mirrors the
-// official reference "Filesystem" MCP extension
-// (github.com/modelcontextprotocol/servers, src/filesystem/index.ts),
-// which Desktop is confirmed to bundle verbatim: its entire stdio setup
-// is two lines -- `new StdioServerTransport()` + `server.connect(transport)`
-// -- operating directly on the real process.stdin/process.stdout that
-// Desktop's own Electron utilityProcess.fork() is driving. No subprocess,
-// no stdio relay, no second process whose own stdin lifecycle could
-// diverge from the first.
+// Connects Desktop directly to the local-bash MCP service over
+// Streamable HTTP using @modelcontextprotocol/sdk's own transports,
+// in-process. There is no subprocess and no mcp-remote.
 //
-// This supersedes the previous two-hop spawn-and-relay design (spawn() +
-// manual stdio piping + a findSystemNode() workaround for the
-// ELECTRON_RUN_AS_NODE/runAsNode-fuse problem). Both problems that design
-// was fighting are structural consequences of spawning a second process
-// at all:
-//   - ELECTRON_RUN_AS_NODE / runAsNode fuse: only matters when spawning
-//     Claude.exe itself as if it were node.exe. Running in-process means
-//     there is no second `node` invocation to launch, so the fuse being
-//     disabled (as it apparently is in this packaged build) is now
-//     irrelevant.
-//   - mcp-remote shutting itself down ~1ms after connecting: confirmed
-//     (via the user's own main.log) to be mcp-remote's own
-//     process.stdin.on('end', ...) handler reacting to something about
-//     how UtilityProcess's stdin behaved when relayed through a second
-//     spawned process's piped stdin. Running mcp-remote directly against
-//     the real process.stdin removes the relay entirely -- there is
-//     nothing left to diverge from the Filesystem extension's own proven
-//     stdin handling, because it is now the exact same stdin object.
+// This replaces an mcp-remote-based design. That design worked, but it
+// could not recover from a stale session: mcp-remote owns both
+// transports internally and its CLI entry exports no hooks, so nothing
+// above it can observe a dead session, let alone reconnect. The failure
+// is routine rather than exotic -- rebuilding the server container
+// (tools/pipeline.sh server) recreates it, and every subsequent request
+// then hangs until Desktop's own ~4-minute client timeout, presenting
+// as an unexplained freeze. The only remedy was toggling the extension
+// off and on by hand.
+//
+// Holding both transports here makes that recoverable, and the same
+// approach is already proven in the cicd-runner extension.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { pathToFileURL } = require('url');
+// Loaded through require() rather than at the top of the file so a
+// missing or broken dependency fails with a stated reason instead of a
+// bare MODULE_NOT_FOUND stack. This is the only dependency, and the
+// extension is useless without it, so failing loudly here is correct.
+let StdioServerTransport;
+let StreamableHTTPClientTransport;
+let StreamableHTTPError;
+try {
+  ({ StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js'));
+  ({ StreamableHTTPClientTransport, StreamableHTTPError } = require('@modelcontextprotocol/sdk/client/streamableHttp.js'));
+} catch (err) {
+  console.error('Failed to load bundled @modelcontextprotocol/sdk dependency:', err);
+  process.exit(1);
+}
 
-// Logs to the same directory Desktop itself already uses for MCP server
-// logs -- confirmed against the official MCP debugging docs
-// (modelcontextprotocol.io/docs/tools/debugging): Windows is
-// `%APPDATA%\Claude\logs`. Falls back to the OS temp dir when `APPDATA`
-// isn't set (Linux -- manifest.json declares that as a compatible
-// platform, but Claude Desktop itself only ships for macOS/Windows per
-// the same docs, so `APPDATA` is never expected there).
+// Logs alongside Desktop's own MCP server logs: %APPDATA%\Claude\logs on
+// Windows, per the official MCP debugging documentation. Falls back to
+// the OS temp directory where APPDATA is unset.
 const debugLogDir = process.env.APPDATA ? path.join(process.env.APPDATA, 'Claude', 'logs') : os.tmpdir();
 const debugLogPath = path.join(debugLogDir, 'locusai-local-bash-debug.log');
 function debugLog(line) {
@@ -53,86 +48,202 @@ function debugLog(line) {
   }
 }
 
-// Resolves mcp-remote's actual compiled entry script from its own
-// package.json `bin` field, rather than hardcoding a path like
-// "dist/proxy.js" -- that field is what mcp-remote itself publishes as
-// its true bin target, so this stays correct across mcp-remote version
-// bumps.
-function resolveMcpRemoteEntry() {
-  const pkgJsonPath = require.resolve('mcp-remote/package.json');
-  const pkgDir = path.dirname(pkgJsonPath);
-  const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
-  const bin = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin && pkg.bin['mcp-remote'];
-  if (!bin) {
-    throw new Error('mcp-remote package.json has no usable "bin" entry');
-  }
-  return path.join(pkgDir, bin);
-}
-
-debugLog('--- launch ---');
+debugLog('--- launch (sdk-direct) ---');
 debugLog(`process.execPath=${process.execPath}`);
 debugLog(`process.version=${process.version}`);
 debugLog(`process.platform=${process.platform}`);
-debugLog(`process.cwd()=${process.cwd()}`);
 debugLog(`__dirname=${__dirname}`);
 
-let mcpRemoteEntry;
-try {
-  mcpRemoteEntry = resolveMcpRemoteEntry();
-  debugLog(`resolved mcp-remote entry: ${mcpRemoteEntry}`);
-} catch (err) {
-  debugLog(`failed to resolve mcp-remote entry: ${err && err.stack ? err.stack : err}`);
-  console.error('Failed to resolve bundled mcp-remote dependency:', err);
-  process.exit(1);
+// The server mounts exactly one directory (the LocusAI checkout, as
+// /workspace) and decides what may run there from its own allowlist, so
+// this extension passes no directory configuration of any kind. That is
+// a deliberate difference from the cicd-runner extension, which must
+// forward a user-selected directory set because it is project-agnostic.
+const SERVER_URL = new URL('http://localhost:1443/mcp');
+
+// Deliberately shorter than Desktop's own ~4-minute client-side timeout,
+// so a lost connection is detected and acted on here rather than
+// surfacing to the user as a bare hang. Well above realistic call
+// durations: a stale session fails via onerror almost immediately, so
+// this fallback only covers the case where no error arrives at all.
+const REQUEST_TIMEOUT_MS = 90_000;
+const TIMEOUT_CHECK_INTERVAL_MS = 5_000;
+
+// A request against a session the server no longer recognises fails
+// with a real HTTP 404, surfaced by the SDK as StreamableHTTPError with
+// a structured .code. Checking the code is precise; the message text is
+// kept only as a fallback for a differently-shaped error carrying the
+// same meaning.
+function isStaleSessionError(err) {
+  if (!err) return false;
+  if (err instanceof StreamableHTTPError && err.code === 404) return true;
+  return /Session not found/i.test(err.message || '');
 }
 
-// Tee console.error into debugLog before importing mcp-remote, since its
-// own log()/debugLog() helpers (src/lib/utils.ts) write via
-// console.error -- this keeps every line mcp-remote logs visible in our
-// own debug file too, alongside Desktop's normal stderr capture (which
-// still happens unmodified, since the original console.error is still
-// called).
-const originalConsoleError = console.error.bind(console);
-console.error = (...args) => {
-  try {
-    debugLog(`[mcp-remote] ${args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}`);
-  } catch {
-    // Never let debug logging break the actual log call.
+const serverTransport = new StdioServerTransport();
+
+let clientTransport = null;
+const pending = new Map(); // id -> { message, originalSentAt }
+let reconnecting = false;
+
+// A fresh transport must complete its own initialize handshake before it
+// will accept anything else -- it has no session ID until then, and any
+// other message fails with "Missing session ID". Desktop's initialize
+// and the notifications/initialized that follows are remembered so a new
+// transport can replay them before retrying anything.
+let lastInitializeMessage = null;
+let lastInitializedNotification = null;
+
+function createClientTransport() {
+  return new StreamableHTTPClientTransport(SERVER_URL);
+}
+
+function sendErrorResponse(id, message) {
+  debugLog(`sending final error response for id=${id}: ${message}`);
+  serverTransport.send({
+    jsonrpc: '2.0',
+    id,
+    error: { code: -32000, message },
+  }).catch((err) => debugLog(`failed to send error response: ${err && err.stack ? err.stack : err}`));
+}
+
+function wireClientTransport(transport) {
+  transport.onmessage = (message) => {
+    if (message.id !== undefined && pending.has(message.id)) {
+      pending.delete(message.id);
+    }
+    serverTransport.send(message).catch((err) => {
+      debugLog(`error sending to Desktop: ${err && err.stack ? err.stack : err}`);
+    });
+  };
+
+  transport.onerror = (err) => {
+    debugLog(`client transport error: ${err && err.stack ? err.stack : err}`);
+    if (isStaleSessionError(err)) {
+      debugLog('detected stale-session signal -- reconnecting (client transport only)');
+      handleStaleConnection();
+    }
+  };
+
+  transport.onclose = () => {
+    debugLog('client transport closed');
+  };
+}
+
+// Budget-based rather than attempt-count-based: a request may legitimately
+// need more than one retry inside its own window, for instance if the
+// container is rebuilt twice in quick succession. Each request's
+// originalSentAt is set once, at first send, and never touched again, so
+// only a request that has genuinely exhausted its own budget is failed.
+function handleStaleConnection() {
+  if (reconnecting) return; // already in progress; avoid a duplicate teardown
+  reconnecting = true;
+  debugLog('handling stale connection');
+
+  const old = clientTransport;
+  if (old) {
+    old.onmessage = undefined;
+    old.onerror = undefined;
+    old.onclose = undefined;
+    old.close().catch(() => {});
   }
-  originalConsoleError(...args);
+
+  const now = Date.now();
+  const toRetry = [];
+  for (const [id, info] of pending.entries()) {
+    // Handshake messages are replayed explicitly below, never queued
+    // into the ordinary retry list.
+    if (info.message.method === 'initialize' || info.message.method === 'notifications/initialized') {
+      continue;
+    }
+    if (now - info.originalSentAt >= REQUEST_TIMEOUT_MS) {
+      pending.delete(id);
+      sendErrorResponse(id, 'LocusAI local-bash connection was lost and could not be recovered in time');
+    } else {
+      toRetry.push([id, info.message]);
+    }
+  }
+
+  clientTransport = createClientTransport();
+  wireClientTransport(clientTransport);
+  clientTransport.start()
+    .then(async () => {
+      if (lastInitializeMessage) {
+        debugLog('replaying initialize on fresh client transport');
+        await clientTransport.send(lastInitializeMessage);
+      }
+      if (lastInitializedNotification) {
+        debugLog('replaying notifications/initialized on fresh client transport');
+        await clientTransport.send(lastInitializedNotification);
+      }
+
+      reconnecting = false;
+      for (const [id, message] of toRetry) {
+        debugLog(`retrying request id=${id} on fresh client transport`);
+        clientTransport.send(message).catch((err) => {
+          debugLog(`error retrying request id=${id}: ${err && err.stack ? err.stack : err}`);
+        });
+      }
+    })
+    .catch((err) => {
+      reconnecting = false;
+      debugLog(`failed to start/re-initialize fresh client transport: ${err && err.stack ? err.stack : err}`);
+    });
+}
+
+function checkPendingTimeouts() {
+  if (reconnecting) return;
+  const now = Date.now();
+  for (const [, info] of pending.entries()) {
+    if (now - info.originalSentAt > REQUEST_TIMEOUT_MS) {
+      debugLog(`request pending >${REQUEST_TIMEOUT_MS}ms since ORIGINAL send with no response -- treating as stale (timeout fallback)`);
+      handleStaleConnection();
+      break; // handleStaleConnection reconnects; the rest are covered next tick
+    }
+  }
+}
+
+serverTransport.onmessage = (message) => {
+  if (message.method === 'initialize') {
+    lastInitializeMessage = message;
+  } else if (message.method === 'notifications/initialized') {
+    lastInitializedNotification = message;
+  }
+  if (message.id !== undefined) {
+    pending.set(message.id, { message, originalSentAt: Date.now() });
+  }
+  clientTransport.send(message).catch((err) => {
+    debugLog(`error sending to local-bash: ${err && err.stack ? err.stack : err}`);
+  });
 };
 
-// mcp-remote's compiled CLI (dist/proxy.js, from src/proxy.ts) reads its
-// arguments from `process.argv.slice(2)` at module-evaluation time (top
-// level, via parseCommandLineArgs(...)) -- so process.argv must be set to
-// what it expects *before* the dynamic import() below resolves and runs
-// that top-level code. Indices 0 and 1 are never read (slice(2) discards
-// them), so their exact values don't matter.
-//
-// --allow-http: the target is a plain (non-TLS) HTTP endpoint on
-// localhost by design (see tools/server/bash_mcp_server.py) -- this tells
-// mcp-remote that's intentional rather than something to warn about or
-// refuse, per its own README ("trusted private networks").
-process.argv = [process.execPath, mcpRemoteEntry, 'http://localhost:1443/mcp', '--allow-http'];
-debugLog(`process.argv set to: ${JSON.stringify(process.argv)}`);
+serverTransport.onerror = (err) => {
+  debugLog(`server transport (Desktop-facing) error: ${err && err.stack ? err.stack : err}`);
+};
 
-// mcp-remote is published as an ES module ("type": "module" in its own
-// package.json), so it's loaded with a dynamic import() (which works
-// from this CommonJS file without needing to convert this file itself to
-// ESM) rather than require(). pathToFileURL() is required on Windows to
-// turn the absolute filesystem path into a valid file:// URL string --
-// import() does not accept raw Windows paths (backslashes / missing
-// scheme) the way require() does.
-//
-// Once loaded, mcp-remote's own top-level code runs its
-// StdioServerTransport against the real process.stdin/process.stdout of
-// *this* process -- the same process Desktop's UtilityProcess launched
-// and is directly driving -- exactly matching the Filesystem reference
-// extension's single-hop pattern. There is no child process and nothing
-// left to relay.
-debugLog('importing mcp-remote entry in-process...');
-import(pathToFileURL(mcpRemoteEntry).href).catch((err) => {
-  debugLog(`failed to import/run mcp-remote: ${err && err.stack ? err.stack : err}`);
-  originalConsoleError('Failed to run bundled mcp-remote dependency:', err);
+async function main() {
+  clientTransport = createClientTransport();
+  wireClientTransport(clientTransport);
+  await clientTransport.start();
+  debugLog('client transport started');
+
+  await serverTransport.start();
+  debugLog('server transport started -- relaying stdio to local-bash directly, no subprocess');
+
+  setInterval(checkPendingTimeouts, TIMEOUT_CHECK_INTERVAL_MS);
+}
+
+main().catch((err) => {
+  debugLog(`fatal error during startup: ${err && err.stack ? err.stack : err}`);
+  console.error('Failed to start LocusAI Local Bash extension:', err);
   process.exit(1);
 });
+
+function cleanup() {
+  debugLog('shutting down');
+  serverTransport.close().catch(() => {});
+  if (clientTransport) clientTransport.close().catch(() => {});
+  process.exit(0);
+}
+process.on('SIGINT', cleanup);
+process.on('SIGTERM', cleanup);

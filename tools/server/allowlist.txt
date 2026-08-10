@@ -41,6 +41,25 @@ gh
 # just works.
 chmod
 
+# gcc: added 2026-08-10 alongside GPU passthrough. core/'s build runs
+# through `make`, so gcc would work as a child process without being
+# listed here -- this entry is for calling the compiler directly when
+# testing a single kernel against the device, which is the common case
+# for GPU work. Same reasoning as git/python3 above: no narrower than
+# what is already permitted.
+gcc
+
+# rocminfo: device verification. Read-only, reports the agents ROCm
+# can see, and is the fastest way to confirm /dev/dxg passthrough is
+# actually working from inside this container rather than assuming it
+# from the compose file. Expect Agent 2 = gfx1100 (RX 7900 XT).
+rocminfo
+
+# hipcc: ROCm's compiler driver, mounted in from the host's /opt/rocm
+# rather than installed in the image. Needed to build anything that
+# actually targets the GPU; gcc above only covers the CPU substrate.
+hipcc
+
 # make: added 2026-08-08 so the new root Makefile (lint/build/deploy/
 # verify/e2e/all, wrapping tools/pipeline.sh with standard DevOps
 # target names -- see Makefile itself) is callable through this proxy

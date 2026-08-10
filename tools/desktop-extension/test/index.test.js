@@ -1,23 +1,23 @@
 'use strict';
-// Automated test suite for ../index.js -- formalizes the ad hoc
-// mechanics check performed by hand while building the in-process
-// (no-subprocess) architecture: a fake local mcp-remote package that
-// mimics the real one's shape ("type": "module", top-level
-// process.argv.slice(2) read, console.error-based logging), run
-// against the REAL, shipped index.js (copied in byte-for-byte, never
-// duplicated as inline text) via a real child process. This is a
-// mechanics/wiring test, not a network test -- it does not talk to
-// localhost:1443 or require Docker, so it runs anywhere Node runs
-// (the sandbox, CI, this machine), matching this project's
-// dependency-mock-verification approach: fake the *dependency*, run
-// the *real* code under test.
+// Automated test suite for ../index.js.
 //
-// What this deliberately does NOT verify: that the real, compiled
-// mcp-remote package (node_modules/mcp-remote/dist/proxy.js) behaves
-// the same way as this test's fake stand-in, or that a real Claude
-// Desktop install can actually launch and talk to this file. Both of
-// those need the real machine -- see tools/pipeline.sh's `server`/
-// `verify` stages and tools/README.md's "What was verified" section.
+// Same approach as the suite it replaces: fake the *dependency*, run
+// the *real* shipped index.js (copied in byte-for-byte, never
+// duplicated as inline text) in a real child process. What changed is
+// the dependency -- the extension no longer wraps mcp-remote, it drives
+// @modelcontextprotocol/sdk's transports itself, so that is what gets
+// faked here.
+//
+// These are mechanics/wiring tests: nothing talks to localhost:1443 and
+// nothing needs Docker, so they run anywhere Node runs. The point is to
+// cover the behaviour the rewrite exists for -- recovering from a stale
+// session -- which is otherwise only observable by rebuilding a
+// container and watching what happens.
+//
+// What this deliberately does NOT verify: that the real SDK behaves
+// like these stand-ins, or that Claude Desktop can launch the packed
+// extension. Both need the real machine -- see tools/pipeline.sh's
+// `server` stage and tools/README.md.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -27,41 +27,63 @@ const { spawnSync } = require('node:child_process');
 
 const INDEX_JS = path.join(__dirname, '..', 'index.js');
 
-/**
- * Builds a fake mcp-remote package under `nodeModulesDir/mcp-remote`,
- * matching the real package's shape closely enough for index.js's own
- * resolveMcpRemoteEntry()/import() logic to exercise for real:
- * "type": "module" (so index.js's dynamic import() path is genuinely
- * taken, not require()), a "bin" field pointing at dist/proxy.js, and
- * a compiled entry whose body is supplied by the caller so each test
- * can simulate a different mcp-remote outcome.
- */
-function makeFakeMcpRemote(nodeModulesDir, proxyBody) {
-  const pkgDir = path.join(nodeModulesDir, 'mcp-remote');
-  const distDir = path.join(pkgDir, 'dist');
-  fs.mkdirSync(distDir, { recursive: true });
+// A fake @modelcontextprotocol/sdk exposing only what index.js imports.
+// `clientSend` is the body of the client transport's send(), supplied
+// per test so each can drive a different outcome; `serverScript` is
+// what the Desktop-facing transport feeds in after start().
+function makeFakeSdk(nodeModulesDir, { clientSend, serverScript }) {
+  const pkgDir = path.join(nodeModulesDir, '@modelcontextprotocol', 'sdk');
+  fs.mkdirSync(path.join(pkgDir, 'server'), { recursive: true });
+  fs.mkdirSync(path.join(pkgDir, 'client'), { recursive: true });
+
   fs.writeFileSync(
     path.join(pkgDir, 'package.json'),
-    JSON.stringify(
-      {
-        name: 'mcp-remote',
-        version: '0.0.0-test',
-        type: 'module',
-        bin: { 'mcp-remote': 'dist/proxy.js' },
-      },
-      null,
-      2,
-    ),
+    JSON.stringify({ name: '@modelcontextprotocol/sdk', version: '0.0.0-test' }, null, 2),
   );
-  fs.writeFileSync(path.join(distDir, 'proxy.js'), proxyBody);
+
+  fs.writeFileSync(
+    path.join(pkgDir, 'server', 'stdio.js'),
+    `'use strict';
+class StdioServerTransport {
+  async start() {
+    ${serverScript}
+  }
+  async send(message) {
+    process.stdout.write('TO_DESKTOP ' + JSON.stringify(message) + '\\n');
+  }
+  async close() {}
+}
+module.exports = { StdioServerTransport };
+`,
+  );
+
+  fs.writeFileSync(
+    path.join(pkgDir, 'client', 'streamableHttp.js'),
+    `'use strict';
+class StreamableHTTPError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+globalThis.__clientInstances = 0;
+class StreamableHTTPClientTransport {
+  constructor(url) {
+    this.url = url;
+    globalThis.__clientInstances += 1;
+    this.instance = globalThis.__clientInstances;
+  }
+  async start() {}
+  async send(message) {
+    ${clientSend}
+  }
+  async close() {}
+}
+module.exports = { StreamableHTTPClientTransport, StreamableHTTPError };
+`,
+  );
 }
 
-/**
- * Sets up an isolated working directory containing a copy of the real
- * index.js (so require.resolve('mcp-remote/...') inside it walks up
- * from THIS directory, not the real repo's node_modules) plus an
- * APPDATA/Claude/logs directory for debugLog() to write into.
- */
 function makeWorkDir(prefix) {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   fs.copyFileSync(INDEX_JS, path.join(workDir, 'index.js'));
@@ -80,55 +102,126 @@ function runIndex(workDir, appDataDir) {
   });
 }
 
-test('resolves mcp-remote, threads process.argv, tees console.error, exits 0 on success', () => {
-  const { workDir, appDataDir } = makeWorkDir('locusai-index-test-ok-');
-  makeFakeMcpRemote(
-    path.join(workDir, 'node_modules'),
-    [
-      "console.error('argv:', JSON.stringify(process.argv.slice(2)));",
-      "process.stdout.write('READY\\n');",
-    ].join('\n'),
+function readDebugLog(appDataDir) {
+  return fs.readFileSync(
+    path.join(appDataDir, 'Claude', 'logs', 'locusai-local-bash-debug.log'),
+    'utf8',
   );
+}
+
+test('starts both transports and relays a request to the server', () => {
+  const { workDir, appDataDir } = makeWorkDir('locusai-index-test-start-');
+  makeFakeSdk(path.join(workDir, 'node_modules'), {
+    clientSend: `
+      process.stdout.write('TO_SERVER ' + JSON.stringify(message) + '\\n');
+      if (message.id === 1) process.exit(0);
+    `,
+    serverScript: `
+      setImmediate(() => {
+        this.onmessage({ jsonrpc: '2.0', id: 0, method: 'initialize' });
+        this.onmessage({ jsonrpc: '2.0', method: 'notifications/initialized' });
+        this.onmessage({ jsonrpc: '2.0', id: 1, method: 'tools/call' });
+      });
+    `,
+  });
 
   const result = runIndex(workDir, appDataDir);
 
   assert.equal(result.status, 0, `expected exit 0, got ${result.status}\nstderr:\n${result.stderr}`);
-  assert.match(result.stdout, /READY/, 'the fake module\'s stdout must reach the real process.stdout unmodified');
-  assert.match(
-    result.stderr,
-    /argv: \["http:\/\/localhost:1443\/mcp","--allow-http"\]/,
-    'process.argv must be set to [.., serverUrl, --allow-http] before the dynamic import() resolves',
-  );
+  assert.match(result.stdout, /TO_SERVER .*"method":"tools\/call"/, 'a Desktop request must reach the server transport');
 
-  const debugLog = fs.readFileSync(
-    path.join(appDataDir, 'Claude', 'logs', 'locusai-local-bash-debug.log'),
-    'utf8',
-  );
-  assert.match(debugLog, /--- launch ---/);
-  assert.match(debugLog, /resolved mcp-remote entry:/);
-  assert.match(
-    debugLog,
-    /\[mcp-remote\] argv:/,
-    'the imported module\'s own console.error calls must be tee\'d into debugLog()',
-  );
+  const log = readDebugLog(appDataDir);
+  assert.match(log, /--- launch \(sdk-direct\) ---/);
+  assert.match(log, /client transport started/);
+  assert.match(log, /server transport started/);
 });
 
-test('missing mcp-remote dependency fails loudly (exit 1, logged reason) instead of hanging', () => {
+test('a stale session reconnects, replays the handshake, and retries the request', () => {
+  const { workDir, appDataDir } = makeWorkDir('locusai-index-test-stale-');
+  makeFakeSdk(path.join(workDir, 'node_modules'), {
+    // First transport rejects the real request the way a server that has
+    // forgotten the session does: HTTP 404 surfaced through onerror.
+    // The replacement transport records what it receives and exits once
+    // the retried request arrives, which is the behaviour under test.
+    clientSend: `
+      process.stdout.write('TO_SERVER#' + this.instance + ' ' + JSON.stringify(message) + '\\n');
+      if (this.instance === 1 && message.id === 1) {
+        const { StreamableHTTPError } = module.exports;
+        setImmediate(() => this.onerror(new StreamableHTTPError(404, 'Session not found')));
+        return;
+      }
+      if (this.instance === 2 && message.id === 1) {
+        setImmediate(() => process.exit(0));
+      }
+    `,
+    serverScript: `
+      setImmediate(() => {
+        this.onmessage({ jsonrpc: '2.0', id: 0, method: 'initialize' });
+        this.onmessage({ jsonrpc: '2.0', method: 'notifications/initialized' });
+        this.onmessage({ jsonrpc: '2.0', id: 1, method: 'tools/call' });
+      });
+    `,
+  });
+
+  const result = runIndex(workDir, appDataDir);
+
+  assert.equal(result.status, 0, `expected exit 0, got ${result.status}\nstderr:\n${result.stderr}`);
+
+  const log = readDebugLog(appDataDir);
+  assert.match(log, /detected stale-session signal -- reconnecting/, 'a 404 must be recognised as staleness');
+  assert.match(
+    log,
+    /replaying initialize on fresh client transport/,
+    'the fresh transport must re-establish its session BEFORE anything else, or the retry fails with "Missing session ID"',
+  );
+  assert.match(log, /retrying request id=1 on fresh client transport/);
+
+  // The retry must land on the SECOND transport, not the dead first one.
+  assert.match(result.stdout, /TO_SERVER#2 .*"method":"tools\/call"/);
+  // And the handshake must be replayed on it before that retry.
+  const order = result.stdout.split('\n').filter((l) => l.startsWith('TO_SERVER#2'));
+  assert.match(order[0] || '', /"method":"initialize"/, 'initialize must be the first message on a fresh transport');
+});
+
+test('an unrecognised error does not trigger a reconnect', () => {
+  const { workDir, appDataDir } = makeWorkDir('locusai-index-test-other-err-');
+  makeFakeSdk(path.join(workDir, 'node_modules'), {
+    clientSend: `
+      process.stdout.write('TO_SERVER#' + this.instance + ' ' + JSON.stringify(message) + '\\n');
+      if (this.instance === 1 && message.id === 1) {
+        setImmediate(() => {
+          this.onerror(new Error('some unrelated transport hiccup'));
+          setImmediate(() => process.exit(0));
+        });
+      }
+    `,
+    serverScript: `
+      setImmediate(() => {
+        this.onmessage({ jsonrpc: '2.0', id: 0, method: 'initialize' });
+        this.onmessage({ jsonrpc: '2.0', id: 1, method: 'tools/call' });
+      });
+    `,
+  });
+
+  const result = runIndex(workDir, appDataDir);
+
+  assert.equal(result.status, 0, `expected exit 0, got ${result.status}\nstderr:\n${result.stderr}`);
+  const log = readDebugLog(appDataDir);
+  assert.match(log, /client transport error/, 'the error must still be logged');
+  assert.doesNotMatch(
+    log,
+    /detected stale-session signal/,
+    'only a stale-session signal may trigger a reconnect -- reconnecting on any error would mask real faults',
+  );
+  assert.doesNotMatch(result.stdout, /TO_SERVER#2/, 'no second transport should be created');
+});
+
+test('missing SDK dependency fails loudly with a stated reason, not a bare stack', () => {
   const { workDir, appDataDir } = makeWorkDir('locusai-index-test-missing-');
-  // Deliberately no node_modules/mcp-remote here.
+  // Deliberately no node_modules at all.
 
   const result = runIndex(workDir, appDataDir);
 
   assert.equal(result.status, 1, `expected exit 1, got ${result.status}`);
-  assert.match(result.stderr, /Failed to resolve bundled mcp-remote dependency/);
-});
-
-test('an mcp-remote entry that throws during import is caught and exits 1, not an uncaught crash', () => {
-  const { workDir, appDataDir } = makeWorkDir('locusai-index-test-throw-');
-  makeFakeMcpRemote(path.join(workDir, 'node_modules'), "throw new Error('boom from fake mcp-remote');\n");
-
-  const result = runIndex(workDir, appDataDir);
-
-  assert.equal(result.status, 1, `expected exit 1, got ${result.status}`);
-  assert.match(result.stderr, /Failed to run bundled mcp-remote dependency/);
+  assert.match(result.stderr, /Failed to load bundled @modelcontextprotocol\/sdk dependency/);
 });

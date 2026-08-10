@@ -2,8 +2,8 @@
   "manifest_version": "0.4",
   "name": "locusai-local-bash",
   "display_name": "LocusAI Local Bash",
-  "version": "2.0.0",
-  "description": "Allowlisted bash execution against the LocusAI project directory, running as a persistent Docker service reached over TCP (localhost:1443) via mcp-remote -- works across the Windows/WSL2 boundary with no cross-OS process execution.",
+  "version": "3.0.0",
+  "description": "Allowlisted bash execution against the LocusAI project directory, running as a persistent Docker service reached over TCP (localhost:1443). Connects via @modelcontextprotocol/sdk's transports in-process and reconnects automatically when the server container is rebuilt.",
   "author": {
     "name": "Arunas Pranckevicius"
   },

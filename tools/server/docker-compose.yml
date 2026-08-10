@@ -23,6 +23,26 @@ services:
       # outright before GH_TOKEN is configured; gh itself will just
       # report unauthenticated until it's set.
       GH_TOKEN: ${GH_TOKEN:-}
+      # GPU access. /opt/rocm and /usr/lib/wsl are bind-mounted from the
+      # host (below) rather than installed, so both must be on the
+      # loader path. Verified live on this host: with these three
+      # mounts plus libelf1/libnuma1/libdrm2 in the image, rocminfo
+      # reports Agent 2 = gfx1100 / Radeon RX 7900 XT, 84 CUs.
+      LD_LIBRARY_PATH: /opt/rocm/lib:/usr/lib/wsl/lib
+      # /opt/rocm/bin prepended to the image's own default PATH. The
+      # allowlist check in bash_mcp_server.py resolves a binary via
+      # PATH, so ROCm tools mounted from the host are "allowlisted but
+      # not installed" without this -- confirmed live. The rest of the
+      # value is python:3.12-slim's own default, reproduced verbatim
+      # rather than guessed, so nothing already on it is lost.
+      PATH: /opt/rocm/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    devices:
+      # WSL2's GPU device node. Mode is crw-rw-rw- on the host, so no
+      # group membership or --privileged is needed. This is the only
+      # container in the project with device access -- cicd_runner's
+      # workers deliberately have none, which is why GPU work belongs
+      # here and CI work belongs there.
+      - /dev/dxg:/dev/dxg
     ports:
       # Bound to 127.0.0.1 explicitly, not 0.0.0.0 -- WSL2's own
       # localhost-forwarding already keeps this off the LAN by
@@ -39,4 +59,14 @@ services:
       # so only the one key meant for this purpose goes in, not the
       # user's personal keys or ssh agent sockets.
       - ${HOME}/.ssh/github:/root/.ssh/github_deploy_key:ro
+      # WSL's own GPU userspace: libdxcore.so and the D3D12 libs that
+      # ROCm links against on WSL. Read-only, and the whole tree is
+      # mounted rather than lib/ alone because the driver blobs under
+      # drivers/ are resolved through it.
+      - /usr/lib/wsl:/usr/lib/wsl:ro
+      # The host's ROCm install, mounted rather than baked in. Keeps
+      # the container's ROCm identical to the host's by construction,
+      # and avoids a multi-GB layer. Read-only: nothing in here should
+      # ever be written by this container.
+      - /opt/rocm:/opt/rocm:ro
     restart: unless-stopped

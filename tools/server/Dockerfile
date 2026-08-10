@@ -6,7 +6,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         gnupg \
         make \
+        gcc \
+        libc6-dev \
+        libelf1 \
+        libnuma1 \
+        libdrm2 \
     && rm -rf /var/lib/apt/lists/*
+
+# gcc/libc6-dev: so core/ can be compiled inside this container rather
+# than only outside it -- this is the only container with GPU access,
+# so a build here is a build that can then be run against the device.
+#
+# libelf1/libnuma1/libdrm2: ROCm's own runtime dependencies. ROCm is
+# NOT installed in this image -- the host's /opt/rocm is bind-mounted
+# read-only instead (see docker-compose.yml), which avoids a multi-GB
+# image layer and keeps the container's ROCm version identical to the
+# host's by construction. These three are what the mounted binaries
+# need from the image side; verified by running rocminfo in a bare
+# ubuntu container with the same mounts and adding exactly what it
+# reported missing.
 
 # gh CLI, official repo per current docs (verified 2026-08-06,
 # https://github.com/cli/cli/blob/trunk/docs/install_linux.md) --
