@@ -25,13 +25,13 @@ once released. LocusAI reproduces that as structure.
 The fast route acts before the slow route finishes. The slow route may then
 revise the outcome, but it never rewrites a pinned releaser.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for why the split is structural
-rather than a weighting, what each constraint is answering, and which
-parts are not implemented yet. [CONSTITUTION.md](CONSTITUTION.md) covers how
-values enter the system without deciding anything.
-[ROADMAP.md](ROADMAP.md) sequences the
-remaining work by dependency; [REFERENCES.md](REFERENCES.md) sources the
-biology.
+See [ARCHITECTURE.md](../doc/core/ARCHITECTURE.md) for why the split is
+structural rather than a weighting, what each constraint is answering, and
+which parts are not implemented yet.
+[CONSTITUTION.md](../doc/core/CONSTITUTION.md) covers how values enter the
+system without deciding anything.
+[ROADMAP.md](../doc/core/ROADMAP.md) sequences the remaining work by
+dependency; [REFERENCES.md](../doc/core/REFERENCES.md) sources the biology.
 
 ## Store semantics
 

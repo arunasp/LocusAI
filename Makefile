@@ -32,7 +32,8 @@ REQS       ?= core/requirements.txt
 # Explicit rather than a $(shell find ...): the set is deterministic, needs
 # no git or shell at parse time, and never sweeps up build/ or .venv/.
 PACK_FILES ?= $(wildcard core/src/*.h core/src/*.c core/py/locus/*.py \
-                         core/tests/*.c core/tests/*.py core/*.md) \
+                         core/tests/*.c core/tests/*.py core/*.md \
+                         doc/core/*.md) \
               core/Makefile core/requirements.txt
 
 .PHONY: lint test build deploy verify e2e all core pack unpack wheels

@@ -17,7 +17,11 @@ belongs on the substrate.
 - `core/` — the substrate itself. C for the trace store, Python for the
   pathway layer. Self-contained, needs no Docker.
   See [core/README.md](core/README.md) for usage and
-  [core/ARCHITECTURE.md](core/ARCHITECTURE.md) for the design rationale.
+  [doc/core/ARCHITECTURE.md](doc/core/ARCHITECTURE.md) for the design
+  rationale.
+- `doc/` — design documents, one directory per component.
+  [doc/core/](doc/core/) holds the substrate's architecture, constitution,
+  roadmap and references.
 - `tools/` — local dev tooling: git/bash MCP servers for Claude Desktop
   integration, and `pipeline.sh`. See [tools/README.md](tools/README.md).
 
@@ -42,8 +46,9 @@ they need a real Docker daemon. Everything else runs anywhere.
 
 `core/` builds and passes its suites. What is implemented, what is
 deliberately deferred, and what is still missing are tracked per design
-constraint in [core/ARCHITECTURE.md](core/ARCHITECTURE.md); `tools/` keeps
-its own verified/not-verified record in [tools/README.md](tools/README.md).
+constraint in [doc/core/ARCHITECTURE.md](doc/core/ARCHITECTURE.md); `tools/`
+keeps its own verified/not-verified record in
+[tools/README.md](tools/README.md).
 
 No GPU backend exists yet. Nothing in this repo has run against a compute
 device.
