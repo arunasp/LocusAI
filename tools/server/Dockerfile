@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         openssh-client \
         curl \
         gnupg \
+        make \
     && rm -rf /var/lib/apt/lists/*
 
 # gh CLI, official repo per current docs (verified 2026-08-06,

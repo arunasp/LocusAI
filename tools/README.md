@@ -170,6 +170,15 @@ tools/pipeline.sh verify    # confirms the endpoint, then one real run_command (
 tools/pipeline.sh all       # all of the above, in order
 ```
 
+A root-level `Makefile` (added 2026-08-08) wraps this with standard
+DevOps target names, for cross-project consistency with
+[cicd_runner](https://github.com/arunasp/cicd_runner)'s own examples:
+`make lint`/`test`/`build`/`deploy`/`verify`/`e2e`/`all` -- `deploy`
+maps to `tools/pipeline.sh server`, `e2e` is currently an alias for
+`verify` (see the Makefile's own comment for why). Either interface
+works; the Makefile is purely a naming convenience over the same
+stages.
+
 Deliberately **local stage scripts, not a cloud CI/CD runner**: the
 stages that matter most (packing the real `.mcpb`, starting a real
 Docker container, confirming a real Claude Desktop install actually

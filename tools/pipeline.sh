@@ -17,6 +17,19 @@
 # machine and are meant to run here, as the staging step after that
 # development.
 #
+# UPDATE 2026-08-08: `build`/`server`/`verify` no longer strictly
+# require running this by hand on the host. ~/stuff/cicd_runner is a
+# separate, project-agnostic container with real docker-socket access
+# (deliberately NOT this project's own container -- a project can't
+# safely rebuild itself, see cicd_runner's own README for why) that
+# can run `run_command(project="LocusAI", binary="bash", args=["tools/
+# pipeline.sh", ...])` directly. `bash` would need adding to
+# cicd_runner's own allowlist.txt for that exact form. Still true:
+# this file itself has no docker/npm/npx on ITS OWN allowlist, and
+# that's staying that way -- cicd_runner is the answer to "how do
+# these stages run without a human", not a reason to widen this
+# project's own container.
+#
 # Usage: tools/pipeline.sh <stage> [stage...]
 #   lint    - shellcheck every .sh, `node --check` every .js
 #             (excluding node_modules/dist), `python3 -m py_compile`

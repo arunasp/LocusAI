@@ -40,3 +40,15 @@ gh
 # the line, no container restart, next run_command('chmod', ...) call
 # just works.
 chmod
+
+# make: added 2026-08-08 so the new root Makefile (lint/build/deploy/
+# verify/e2e/all, wrapping tools/pipeline.sh with standard DevOps
+# target names -- see Makefile itself) is callable through this proxy
+# via run_command(binary="make", args=[...]) rather than needing
+# `bash` allowlisted (still an open, deliberately unresolved decision
+# -- see tools/pipeline.sh's own comments). NOTE: allowlisting alone
+# isn't enough -- `make` also needs to actually be installed in the
+# image (Dockerfile), which needs a rebuild to take effect; this line
+# refreshes live via mtime same as the rest of this file, but the
+# binary itself won't be usable until that rebuild happens.
+make
