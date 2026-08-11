@@ -18,6 +18,9 @@ PY       = $(VENV)/bin/python3
 # C side now needs libm explicitly. Kept as a variable rather than inlined so
 # a platform where libm is part of libc can override it to empty.
 LDLIBS  ?= -lm
+HIPCC   ?= hipcc
+GPUSRC   = gpu/probe.cpp
+GPUBIN   = $(BUILD)/gpu_probe
 PREFIX  ?= /usr/local
 SRC      = src/store.c
 HDR      = src/locus.h
@@ -25,7 +28,11 @@ BUILD    = build
 LIB      = $(BUILD)/liblocus.so
 TESTBIN  = $(BUILD)/test_store
 
-.PHONY: lint test build deploy verify e2e all clean
+# `gpu` is listed here for a reason that already bit this project once: the
+# target shares its name with the gpu/ source directory, so without .PHONY
+# make sees the directory, considers the target satisfied, and silently does
+# nothing. Same collision the `build` target hit during the scaffold build.
+.PHONY: lint test build deploy verify e2e all clean gpu
 
 # Sentinel file, deliberately NOT in .PHONY: a .PHONY listing would
 # force the install to re-run on every invocation regardless of
@@ -90,6 +97,31 @@ e2e: verify ## Alias for verify
 # the host uid:gid does not have. Run it explicitly with a writable
 # prefix instead: make deploy PREFIX=$$HOME/.local
 all: .deps lint build test verify ## Run the full pipeline
+
+# Deliberately NOT part of `all`. The substrate is CPU-only and must stay
+# runnable anywhere -- cicd_runner's workers have no device by design, so
+# folding this into `all` would make the ordinary pipeline fail on the
+# machine that runs it most. This target is for the one container that has
+# /dev/dxg, and it skips rather than fails where the toolchain is absent,
+# so a plain checkout is never broken by a missing GPU.
+gpu: ## Compile and run the GPU toolchain probe (skipped without hipcc)
+	@# One shell for the whole recipe: make runs each recipe LINE in its
+	@# own shell, so an `exit 0` in a guard line ends only that line and
+	@# the build below still runs -- which is exactly what happened the
+	@# first time this was written.
+	@#
+	@# && rather than ; between the steps: with `;` a failed compile still
+	@# reaches the run step, and if a STALE build/gpu_probe were present it
+	@# would execute the old binary and print PASS. A failed build must not
+	@# be able to report success.
+	@if command -v $(HIPCC) >/dev/null 2>&1; then \
+		mkdir -p $(BUILD) && \
+		echo "$(HIPCC) -O2 -o $(GPUBIN) $(GPUSRC)" && \
+		$(HIPCC) -O2 -o $(GPUBIN) $(GPUSRC) && \
+		$(GPUBIN); \
+	else \
+		echo "gpu: $(HIPCC) not found -- skipped"; \
+	fi
 
 # .venv is deliberately NOT removed here: rebuilding it is the
 # expensive part, and .deps alone being gone is enough to force a

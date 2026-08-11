@@ -14,15 +14,14 @@ services:
     command: ["python3", "/app/bash_mcp_server.py"]
     environment:
       MCP_PORT: "1443"
-      # gh CLI's own auth token -- separate from the ssh deploy key
-      # below (Arunas's auth split, 2026-08-06: ssh for git push/pull,
-      # gh API/token for everything else -- PRs, issues, releases).
-      # Set GH_TOKEN in the shell this is launched from, or in a
-      # .env file next to this one (gitignored) -- never commit a
-      # real token into this file. Empty default so `up` doesn't fail
-      # outright before GH_TOKEN is configured; gh itself will just
-      # report unauthenticated until it's set.
-      GH_TOKEN: ${GH_TOKEN:-}
+      # Run the server as the invoking host user rather than root, so
+      # anything built here -- build/liblocus.so, build/gpu_probe,
+      # core/.venv -- is owned by that user on the bind mount instead
+      # of by root. entrypoint.sh creates the passwd entry and drops
+      # privilege; see the ulimits block below for the second, separate
+      # cause that must be fixed alongside it.
+      TARGET_UID: ${TARGET_UID:-1000}
+      TARGET_GID: ${TARGET_GID:-1000}
       # GPU access. /opt/rocm and /usr/lib/wsl are bind-mounted from the
       # host (below) rather than installed, so both must be on the
       # loader path. Verified live on this host: with these three
@@ -43,6 +42,18 @@ services:
       # workers deliberately have none, which is why GPU work belongs
       # here and CI work belongs there.
       - /dev/dxg:/dev/dxg
+    ulimits:
+      # Independent of the passwd entry entrypoint.sh creates, and both
+      # are needed: after a set*uid() call the kernel checks the NEW real
+      # uid's RLIMIT_NPROC, which is enforced per-uid SYSTEM-WIDE -- it
+      # counts every process already running as that uid on the host, not
+      # just those in this container. Docker's default can be as low as
+      # 128, which an ordinary desktop session for uid 1000 exceeds on its
+      # own, and the symptom is an EAGAIN on execve for any binary, which
+      # reads like a permissions fault rather than a limit.
+      nproc:
+        soft: 8192
+        hard: 8192
     ports:
       # Bound to 127.0.0.1 explicitly, not 0.0.0.0 -- WSL2's own
       # localhost-forwarding already keeps this off the LAN by
@@ -51,14 +62,6 @@ services:
       - "127.0.0.1:1443:1443"
     volumes:
       - ${PROJECT_DIR}:/workspace
-      # Read-only deploy key for `git push`/pull over ssh -- matches
-      # the Host github.com IdentityFile path baked into the image's
-      # /root/.ssh/config (see Dockerfile). Never mount the whole
-      # ~/.ssh directory -- this container also exposes an
-      # allowlisted command-execution surface (bash_mcp_server.py),
-      # so only the one key meant for this purpose goes in, not the
-      # user's personal keys or ssh agent sockets.
-      - ${HOME}/.ssh/github:/root/.ssh/github_deploy_key:ro
       # WSL's own GPU userspace: libdxcore.so and the D3D12 libs that
       # ROCm links against on WSL. Read-only, and the whole tree is
       # mounted rather than lib/ alone because the driver blobs under

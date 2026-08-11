@@ -18,19 +18,11 @@ python3
 pip
 pytest
 
-# git: needed so a push/pull can go through this proxy instead of
-# requiring shell access on the WSL2 host directly. No narrower than
-# python3/pip above -- those already permit arbitrary code execution,
-# so gating git to specific subcommands wouldn't raise the actual
-# security ceiling, just add friction.
-git
-
-# gh: GitHub CLI, added 2026-08-06 alongside the ssh deploy-key mount
-# and image-level gh install (see Dockerfile) -- Arunas's auth split:
-# git push/pull goes over ssh, everything else (PRs, issues, releases)
-# goes through gh's own token (GH_TOKEN, see docker-compose.yml). Same
-# reasoning as git above: no narrower than what's already allowlisted.
-gh
+# git and gh were removed 2026-08-10. Both were added for the Aug 6 auth
+# split, which cicd_runner has since superseded: deployment goes through
+# that runner, and this container's scope is testing project code only.
+# The image no longer installs gh or carries the ssh config either, so
+# leaving them listed would have advertised a capability that is gone.
 
 # chmod: needed because file-edit tools that write into /workspace
 # from outside the container (Filesystem MCP, remote edits) don't

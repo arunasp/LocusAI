@@ -12,7 +12,7 @@ project's own container:
 | Property | Value |
 |---|---|
 | Agent | `gfx1100` — AMD Radeon RX 7900 XT |
-| Compute units | 84, 2 SIMDs each, 6 shader engines |
+| Compute units | 84 (`rocminfo`) / 42 reported by HIP as `multiProcessorCount` |
 | Wavefront | 32 (RDNA3) |
 | Fast f16 | yes |
 | VRAM pool | ~19.96 GiB, coarse-grained |
@@ -25,6 +25,28 @@ project's own container:
 | ISAs | `amdgcn-amd-amdhsa--gfx1100`, `gfx11-generic` |
 
 Backend is **ROCm/HIP**, not Vulkan or DirectML.
+
+## The compute-unit count depends on who is asked
+
+`rocminfo` reports 84 compute units; HIP's `multiProcessorCount` reports 42
+for the same device. Both are correct and neither is a rounding error.
+
+On RDNA, two CUs are paired into a **work-group processor**, and it is the
+WGP that HIP surfaces as a "multiprocessor". 42 WGPs x 2 = 84 CUs.
+
+This matters for occupancy arithmetic rather than trivia: a kernel's
+waves-per-multiprocessor budget is against the WGP, so using 84 there
+overestimates available parallelism by exactly a factor of two. Take the
+number from the HIP runtime when sizing a launch, and from `rocminfo` when
+describing the hardware.
+
+## Known runtime warning
+
+A clean probe run still emits `Resource leak detected by SharedSignalPool,
+2 Signals leaked` on exit. It comes from the ROCm runtime's own teardown,
+not from the probe's allocations — every `hipMalloc` is freed and the
+result verifies. Recorded rather than dismissed: it is unexplained, and a
+second, different leak count later would otherwise look normal.
 
 ## Reaching the device
 
