@@ -21,7 +21,8 @@ belongs on the substrate.
   rationale.
 - `doc/` — design documents, one directory per component.
   [doc/core/](doc/core/) holds the substrate's architecture, constitution,
-  roadmap and references.
+  autonomic layer, methodology, hardware notes, roadmap and references.
+- [CHANGELOG.md](CHANGELOG.md) — what changed and when.
 - `tools/` — local dev tooling: git/bash MCP servers for Claude Desktop
   integration, and `pipeline.sh`. See [tools/README.md](tools/README.md).
 
