@@ -29,7 +29,14 @@ See [ARCHITECTURE.md](../doc/core/ARCHITECTURE.md) for why the split is
 structural rather than a weighting, what each constraint is answering, and
 which parts are not implemented yet.
 [CONSTITUTION.md](../doc/core/CONSTITUTION.md) covers how values enter the
-system without deciding anything.
+system without deciding anything, and
+[AUTONOMIC.md](../doc/core/AUTONOMIC.md) covers what runs without being
+commanded — including the rule that a reclaim signal must be written only by
+the process that owns it.
+[METHODOLOGY.md](../doc/core/METHODOLOGY.md) states how these designs are
+derived and what makes one finished;
+[HARDWARE.md](../doc/core/HARDWARE.md) records the device facts the design
+depends on and what follows from them.
 [ROADMAP.md](../doc/core/ROADMAP.md) sequences the remaining work by
 dependency; [REFERENCES.md](../doc/core/REFERENCES.md) sources the biology.
 
