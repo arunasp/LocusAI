@@ -37,6 +37,19 @@ versions, since nothing is released yet.
   *absent* from the runtime's struct, and a query *present but refusing*).
   Needs no GPU, no hipcc and no venv, so it is the only stage that can guard
   the probes' reporting logic where `caps` can merely skip.
+- `tools/server/rocm-detect.sh` and `tools/server/tests/rocm-detect.test.sh`
+  — decides at invocation how this boot reaches the GPU and where its ROCm
+  SDK comes from, emitting shell-assignable settings (`ROCM_BOOT`,
+  `GPU_DEVICES`, `ROCM_HOST_VERSION`, `ROCM_HIP_TRIPLE`, `ROCM_SOURCE`,
+  `ROCM_IMAGE`, `COMPOSE_FILE`) or merging them into compose's `.env`.
+  `--pull` fetches a version-matched image with a disk preflight, refusing
+  under 20 GiB free rather than discovering the partition full. A host ROCm
+  is preferred where one exists because under WSL2 the host's HSA runtime is
+  a dxg-aware build and AMD's generic images target `/dev/kfd`; where there
+  is none — the Mageia case — the image is the whole SDK and defines the
+  version. It refuses to invent a tag rather than guess into a multi-gigabyte
+  pull. `SYSROOT` exists as an injection point so all six boot/SDK states are
+  testable on any machine; 23 assertions cover them plus the `.env` merge.
 
 ### Measured
 
