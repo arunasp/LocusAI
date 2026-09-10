@@ -65,7 +65,7 @@ TESTBIN  = $(BUILD)/test_store
 # target shares its name with the gpu/ source directory, so without .PHONY
 # make sees the directory, considers the target satisfied, and silently does
 # nothing. Same collision the `build` target hit during the scaffold build.
-.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock
+.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check
 
 # Sentinel file, deliberately NOT in .PHONY: a .PHONY listing would
 # force the install to re-run on every invocation regardless of
@@ -131,13 +131,42 @@ e2e: verify ## Alias for verify
 # prefix instead: make deploy PREFIX=$$HOME/.local
 all: .deps lint build test verify ## Run the full pipeline
 
+# Guards the ONE failure mode the extracted-header workaround introduces.
+# The tree in $(ROCM_INCLUDE) is version-pinned to whatever ROCm the host ran
+# when it was unpacked; the host can move underneath it, and skewed headers
+# COMPILE FINE while reporting wrong struct offsets -- silent, and exactly
+# the class caps.cpp's field detection exists to survive rather than detect.
+# Both sides publish the same triple, so compare them and fail loudly.
+# Checked ONLY when the extracted tree is actually in use: a host with a
+# complete SDK has nothing to skew.
+hip-header-check: ## Assert extracted HIP headers match the host ROCm version
+	@if [ -z "$(HIPINC)" ]; then \
+		echo "hip-header-check: not using extracted headers -- skipped"; \
+	elif [ ! -f "$(ROCM_PATH)/share/hip/version" ]; then \
+		echo "hip-header-check: no host version file -- UNCHECKED"; \
+	else \
+		hdr=$$(sed -n 's/^#define HIP_VERSION_\(MAJOR\|MINOR\|PATCH\) *\([0-9]*\)$$/\2/p' $(ROCM_INCLUDE)/hip/hip_version.h | tr '\n' '.'); \
+		host=$$(sed -n 's/^HIP_VERSION_\(MAJOR\|MINOR\|PATCH\)=\([0-9]*\)$$/\2/p' "$(ROCM_PATH)/share/hip/version" | tr '\n' '.'); \
+		if [ -z "$$hdr" ] || [ -z "$$host" ]; then \
+			echo "hip-header-check: could not read a version from both sides -- UNCHECKED (hdr='$$hdr' host='$$host')"; \
+		elif [ "$$hdr" = "$$host" ]; then \
+			echo "hip-header-check: headers $$hdr match host runtime -- ok"; \
+		else \
+			echo "hip-header-check: FAIL -- extracted headers $$hdr vs host runtime $$host"; \
+			echo "  The host's ROCm moved. Regenerate $(ROCM_INCLUDE) from the"; \
+			echo "  host's CURRENT ROCm rather than compiling against skew;"; \
+			echo "  see doc/core/HARDWARE.md, 'Reaching the device'."; \
+			exit 1; \
+		fi; \
+	fi
+
 # Deliberately NOT part of `all`. The substrate is CPU-only and must stay
 # runnable anywhere -- cicd_runner's workers have no device by design, so
 # folding this into `all` would make the ordinary pipeline fail on the
 # machine that runs it most. This target is for the one container that has
 # /dev/dxg, and it skips rather than fails where the toolchain is absent,
 # so a plain checkout is never broken by a missing GPU.
-gpu: ## Compile and run the GPU toolchain probe (skipped without hipcc)
+gpu: hip-header-check ## Compile and run the GPU toolchain probe (skipped without hipcc)
 	@# One shell for the whole recipe: make runs each recipe LINE in its
 	@# own shell, so an `exit 0` in a guard line ends only that line and
 	@# the build below still runs -- which is exactly what happened the
@@ -158,7 +187,7 @@ gpu: ## Compile and run the GPU toolchain probe (skipped without hipcc)
 
 # Same one-shell / && / skip-not-fail contract as `gpu` above, for the same
 # reasons -- see that comment before changing either.
-caps: ## Probe device capabilities and the memory hierarchy (skipped without hipcc)
+caps: hip-header-check ## Probe device capabilities and the memory hierarchy (skipped without hipcc)
 	@if command -v $(HIPCC) >/dev/null 2>&1; then \
 		mkdir -p $(BUILD) && \
 		echo "$(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(CAPSBIN) $(CAPSSRC)" && \
@@ -171,7 +200,7 @@ caps: ## Probe device capabilities and the memory hierarchy (skipped without hip
 # Gated: persist.cpp runs a deliberately long kernel and SELF-SKIPS unless
 # LOCUS_GPU_STRESS=1, so invoking this target is safe by default. Read the
 # warning at the top of gpu/persist.cpp before setting that variable.
-persist: ## Probe persistent-kernel viability (gated by LOCUS_GPU_STRESS=1)
+persist: hip-header-check ## Probe persistent-kernel viability (gated by LOCUS_GPU_STRESS=1)
 	@if command -v $(HIPCC) >/dev/null 2>&1; then \
 		mkdir -p $(BUILD) && \
 		echo "$(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(PERBIN) $(PERSRC)" && \

@@ -89,6 +89,29 @@ on 2026-08-18, and both were silent until `make gpu` was next run on
    gitignored and version-pinned: regenerate it after any ROCm move rather
    than trusting it.
 
+**Why not source ROCm from a container image instead**, checked against
+Docker Hub's `rocm` org on 2026-09-10 so it is not re-surveyed: AMD stopped
+publishing a thin dev image at 7.x. The 6.4 line has a plain tag at 0.96 GiB
+and a `-complete` at ~4 GiB, but 7.14 and 10.0 ship **`-full` only**, 7.40
+to 7.70 GiB compressed — roughly 18-20 GiB extracted, against 24.7 GiB free
+on `/data/disk`. The thin images that do exist (`rocm-terminal:latest` at
+1.02 GiB, `dev-ubuntu-24.04:6.4` at 0.96 GiB) are ROCm **6.4**, and 6.4
+headers against a 7.14 runtime is precisely the skew `caps.cpp`'s field
+detection exists to *survive* rather than detect. So the 494 KB package
+extraction is not a stopgap for a better source — it is the only option that
+is both thin and version-exact, because it comes from the same package set
+the host actually runs.
+
+**The staleness is therefore handled by assertion, not by choice of source.**
+Both sides publish the same triple — the host at
+`$ROCM_PATH/share/hip/version` and the headers at `hip/hip_version.h` — so
+`make hip-header-check` compares them and fails loudly on a mismatch. It is
+a prerequisite of `gpu`, `caps` and `persist`, so skewed headers cannot
+reach a compile; it skips when the extracted tree is not in use, since a
+host with a complete SDK has nothing to skew. Mutation-tested rather than
+assumed: perturbing the header's patch level turns it red and blocks the
+build.
+
 The rest of the working configuration, established by adding exactly
 what each failure reported missing:
 

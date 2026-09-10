@@ -99,6 +99,16 @@ versions, since nothing is released yet.
 - `lint` skipped `core/gpu/tests` entirely, so the new driver was outside
   pycodestyle. Added to the target, and the seven long lines it found are
   fixed.
+- The extracted-header workaround could go stale silently: skewed HIP
+  headers compile fine while reporting wrong struct offsets. `make
+  hip-header-check` now compares the headers' `hip_version.h` triple against
+  the host's `share/hip/version` and fails loudly, and it is a prerequisite
+  of `gpu`, `caps` and `persist` so skew cannot reach a compile. Surveyed
+  the alternative first (see `doc/core/HARDWARE.md`): AMD publishes no thin
+  ROCm dev image at 7.x, only `-full` at 7.4-7.7 GiB, and the thin ones that
+  exist are 6.4 — so the 494 KB package extraction is the only source that
+  is both thin and version-exact, and the fix belongs in the assertion
+  rather than in a different source.
 - Extension tests still asserted the pre-rewrite design and would have been
   committed red.
 
