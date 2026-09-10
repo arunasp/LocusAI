@@ -18,6 +18,13 @@ check() { # $1=name $2=out $3=needle
   if printf '%s' "$2" | grep -qF -- "$3"; then pass=$((pass+1)); echo "  [PASS] $1 :: $3"
   else fail=$((fail+1)); echo "  [FAIL] $1 :: expected '$3'"; fi
 }
+# Exact whole-line match. Needed for any assertion about an EMPTY value:
+# a substring test for 'COMPOSE_PROFILES=' matches every non-empty value too,
+# so it would pass while proving nothing.
+checkx() { # $1=name $2=out $3=exact line
+  if printf '%s\n' "$2" | grep -qxF -- "$3"; then pass=$((pass+1)); echo "  [PASS] $1 :: [$3]"
+  else fail=$((fail+1)); echo "  [FAIL] $1 :: expected exact line '$3'"; fi
+}
 run() { SYSROOT="$1" sh -c "$2 ./rocm-detect.sh" 2>&1; }
 
 mkfix /tmp/f1 dxg yes;  O=$(run /tmp/f1 "")
@@ -26,18 +33,39 @@ check "wsl2 + host rocm" "$O" "GPU_DEVICES=/dev/dxg"
 check "wsl2 + host rocm" "$O" "ROCM_SOURCE=host"
 check "wsl2 + host rocm" "$O" "ROCM_HOST_VERSION=7.14.0"
 check "wsl2 + host rocm" "$O" "ROCM_HIP_TRIPLE=7.14.60850"
-check "wsl2 + host rocm" "$O" "docker-compose.wsl.yml"
+# ONE compose file for both boots: every difference is a variable value, so
+# there is no overlay to select. These are the keys docker-compose.yml
+# actually interpolates.
+checkx "wsl2 single compose file" "$O" "COMPOSE_FILE=docker-compose.yml"
+checkx "wsl2 no seeder profile" "$O" "COMPOSE_PROFILES="
+checkx "wsl2 device slot 1" "$O" "GPU_DEV_1=/dev/dxg"
+checkx "wsl2 unused device slot" "$O" "GPU_DEV_2=/dev/zero"
+checkx "wsl2 binds host rocm" "$O" "ROCM_MOUNT_SRC=/opt/rocm"
+checkx "wsl2 binds wsl userspace" "$O" "WSL_LIB_SRC=/usr/lib/wsl"
+check  "wsl2 loader path has wsl lib" "$O" "ROCM_LIB_PATH=/tmp/f1/opt/rocm/core-7.14/lib:/usr/lib/wsl/lib"
 
 mkfix /tmp/f2 kfd yes;  O=$(run /tmp/f2 "")
 check "native + host rocm" "$O" "ROCM_BOOT=native"
 check "native + host rocm" "$O" "GPU_DEVICES=/dev/kfd /dev/dri"
-check "native + host rocm" "$O" "docker-compose.native.yml"
+checkx "native device slots" "$O" "GPU_DEV_1=/dev/kfd"
+checkx "native device slots" "$O" "GPU_DEV_2=/dev/dri"
+# The wsl tree has no meaning natively, so the mount source becomes an empty
+# NAMED VOLUME rather than a bind of a path docker would create on the host.
+checkx "native wsl mount is a volume" "$O" "WSL_LIB_SRC=wsl-lib-unused"
+# Host ROCm present, so no seeder and no image even on a native boot.
+checkx "native+host needs no profile" "$O" "COMPOSE_PROFILES="
+check  "native loader path omits wsl" "$O" "ROCM_LIB_PATH=/tmp/f2/opt/rocm/core-7.14/lib"
 
 mkfix /tmp/f3 kfd no;   O=$(run /tmp/f3 "")
 check "ABSENT host rocm (Mageia)" "$O" "ROCM_SOURCE=image"
 check "ABSENT host rocm (Mageia)" "$O" "ROCM_HOST_PATH="
 check "ABSENT host rocm (Mageia)" "$O" "no ROCM_IMAGE_TAG given"
 check "ABSENT host rocm (Mageia)" "$O" "ROCM_IMAGE="
+# No host ROCm: the SDK comes from a named volume the seeder populates, so
+# the profile that defines the seeder must be active.
+checkx "Mageia sdk from volume" "$O" "ROCM_MOUNT_SRC=rocm-sdk"
+checkx "Mageia activates seeder" "$O" "COMPOSE_PROFILES=rocm-image"
+checkx "Mageia plain rocm layout" "$O" "ROCM_LIB_PATH=/opt/rocm/lib"
 
 O=$(run /tmp/f3 "ROCM_IMAGE_TAG=7.14.0-full")
 check "Mageia + explicit tag" "$O" "ROCM_IMAGE=rocm/dev-ubuntu-24.04:7.14.0-full"
@@ -58,7 +86,13 @@ E=$(cat /tmp/env.test)
 check "env merge keeps foreign key" "$E" "TARGET_UID=1000"
 check "env merge replaces own key" "$(grep -c '^ROCM_BOOT=' /tmp/env.test)" "1"
 check "env merge wrote fresh value" "$E" "ROCM_BOOT=wsl2"
-printf '%s' "$E" | grep -q 'stale' && { fail=$((fail+1)); echo "  [FAIL] stale value survived"; } || { pass=$((pass+1)); echo "  [PASS] stale value replaced"; }
+# Not `A && B || C` -- that runs C when A succeeds but B fails, which would
+# report a pass on the failure path. Spelled out as if/else instead.
+if printf '%s' "$E" | grep -q 'stale'; then
+  fail=$((fail+1)); echo "  [FAIL] stale value survived"
+else
+  pass=$((pass+1)); echo "  [PASS] stale value replaced"
+fi
 
 echo; echo "$pass passed, $fail failed"
 echo "RESULT: $([ "$fail" -eq 0 ] && echo 'ALL PASS' || echo FAIL)"

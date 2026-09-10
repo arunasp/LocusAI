@@ -1,12 +1,30 @@
 # Do NOT run `docker compose`/`docker-compose` directly against this file.
 # Always go through tools/server/start.sh (or tools/pipeline.sh server) --
-# it does two things a raw `up -d` skips: (1) resolves and exports
-# PROJECT_DIR so the volume mount isn't empty, and (2) `compose rm -sf`
-# before `up -d` to clear the existing container first. Recreating an
-# existing container in place hits docker-compose v1's `KeyError:
-# 'ContainerConfig'` bug (docker/compose#11742) whenever the image was
-# rebuilt with BuildKit -- confirmed recurring live when this file was
-# invoked directly instead of through start.sh.
+# it does three things a raw `up -d` skips: (1) resolves and exports
+# PROJECT_DIR so the volume mount isn't empty, (2) runs rocm-detect.sh so the
+# boot-specific values below are populated, and (3) `compose rm -sf` before
+# `up -d` to clear the existing container first. Recreating an existing
+# container in place hits docker-compose v1's `KeyError: 'ContainerConfig'`
+# bug (docker/compose#11742) whenever the image was rebuilt with BuildKit --
+# confirmed recurring live when this file was invoked directly instead of
+# through start.sh.
+#
+# ONE FILE FOR BOTH BOOTS, AND WHY IT LOOKS LIKE THIS.
+# Compose has no conditional syntax -- no `if`, and no way to include or omit
+# a single list entry. What it does have is variable interpolation with
+# defaults, plus `profiles` to enable or disable a whole service. So every
+# difference between the WSL2 and native-Linux boots is expressed here as a
+# VARIABLE VALUE rather than as a branch, and the one difference that cannot
+# be (a service that must not exist at all on WSL2) is a profile.
+#
+# tools/server/rocm-detect.sh computes every variable below and writes them
+# into .env. Run it before compose, or let start.sh do it.
+#
+# The trick that makes the mounts work in one line: in compose's short volume
+# syntax, a source WITHOUT a leading slash is a NAMED VOLUME rather than a
+# bind mount. So the same line binds a host directory on one boot and mounts
+# a Docker-managed volume on the other, decided purely by the value.
+
 services:
   local-bash:
     build: .
@@ -22,26 +40,36 @@ services:
       # cause that must be fixed alongside it.
       TARGET_UID: ${TARGET_UID:-1000}
       TARGET_GID: ${TARGET_GID:-1000}
-      # GPU access. /opt/rocm and /usr/lib/wsl are bind-mounted from the
-      # host (below) rather than installed, so both must be on the
-      # loader path. Verified live on this host: with these three
-      # mounts plus libelf1/libnuma1/libdrm2 in the image, rocminfo
-      # reports Agent 2 = gfx1100 / Radeon RX 7900 XT, 84 CUs.
-      LD_LIBRARY_PATH: /opt/rocm/lib:/usr/lib/wsl/lib
-      # /opt/rocm/bin prepended to the image's own default PATH. The
-      # allowlist check in bash_mcp_server.py resolves a binary via
-      # PATH, so ROCm tools mounted from the host are "allowlisted but
-      # not installed" without this -- confirmed live. The rest of the
-      # value is python:3.12-slim's own default, reproduced verbatim
-      # rather than guessed, so nothing already on it is lost.
-      PATH: /opt/rocm/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      # GPU loader path, boot-dependent and therefore a variable.
+      # /opt/rocm's own bin/lib may be update-alternatives symlinks into
+      # /etc/alternatives, which this container does not mount, so they
+      # dangle -- rocm-detect.sh resolves the real versioned directory and
+      # puts it here. On WSL2 the value also carries /usr/lib/wsl/lib, which
+      # holds libdxcore.so and the D3D12 libraries ROCm links against there;
+      # natively that path does not exist and is absent from the value.
+      LD_LIBRARY_PATH: ${ROCM_LIB_PATH:-/opt/rocm/lib:/usr/lib/wsl/lib}
+      # ROCm's bin directory prepended to the image's own default PATH. The
+      # allowlist check in bash_mcp_server.py resolves a binary via PATH, so
+      # ROCm tools mounted from the host are "allowlisted but not installed"
+      # without this -- confirmed live. The tail is python:3.12-slim's own
+      # default, reproduced verbatim rather than guessed, so nothing already
+      # on it is lost.
+      PATH: ${ROCM_BIN_PATH:-/opt/rocm/bin}:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     devices:
-      # WSL2's GPU device node. Mode is crw-rw-rw- on the host, so no
-      # group membership or --privileged is needed. This is the only
-      # container in the project with device access -- cicd_runner's
-      # workers deliberately have none, which is why GPU work belongs
-      # here and CI work belongs there.
-      - /dev/dxg:/dev/dxg
+      # TWO FIXED SLOTS, because compose cannot grow or shrink a list.
+      # WSL2 needs one node (/dev/dxg, mode crw-rw-rw- on the host, so no
+      # group membership and no --privileged); a native boot needs two
+      # (/dev/kfd plus the /dev/dri render nodes). An unused slot is filled
+      # with a real, harmless node rather than left empty, and the two
+      # defaults are DIFFERENT devices on purpose: passing the same node
+      # twice is a duplicate entry, so /dev/null and /dev/zero keep the
+      # no-GPU case well-formed.
+      #
+      # This is the only container in the project with device access --
+      # cicd_runner's workers deliberately have none, which is why GPU work
+      # belongs here and CI work belongs there.
+      - ${GPU_DEV_1:-/dev/null}
+      - ${GPU_DEV_2:-/dev/zero}
     ulimits:
       # Independent of the passwd entry entrypoint.sh creates, and both
       # are needed: after a set*uid() call the kernel checks the NEW real
@@ -62,14 +90,63 @@ services:
       - "127.0.0.1:1443:1443"
     volumes:
       - ${PROJECT_DIR}:/workspace
-      # WSL's own GPU userspace: libdxcore.so and the D3D12 libs that
-      # ROCm links against on WSL. Read-only, and the whole tree is
-      # mounted rather than lib/ alone because the driver blobs under
-      # drivers/ are resolved through it.
-      - /usr/lib/wsl:/usr/lib/wsl:ro
-      # The host's ROCm install, mounted rather than baked in. Keeps
-      # the container's ROCm identical to the host's by construction,
-      # and avoids a multi-GB layer. Read-only: nothing in here should
-      # ever be written by this container.
-      - /opt/rocm:/opt/rocm:ro
+      # THE ROCm SDK, from whichever source this boot has.
+      # WSL2: ROCM_MOUNT_SRC=/opt/rocm, a bind mount of the host's install.
+      # Keeping the container's ROCm identical to the host's by construction
+      # matters there specifically, because the host runtime is a dxg-aware
+      # build (it references /dev/dxg, HSA_ENABLE_DXG_DETECTION and
+      # librocdxg) that AMD's generic images are not.
+      # Native: ROCM_MOUNT_SRC=rocm-sdk, a named volume populated from the
+      # ROCm image by the rocm-sdk service below -- because a Mageia host has
+      # no ROCm at all, so there is nothing to bind.
+      # Read-only either way: nothing here should ever be written by this
+      # container.
+      - ${ROCM_MOUNT_SRC:-/opt/rocm}:/opt/rocm:ro
+      # WSL's own GPU userspace. The whole tree is mounted rather than lib/
+      # alone because the driver blobs under drivers/ resolve through it.
+      # Natively this has no meaning, and the default is a NAMED VOLUME
+      # (no leading slash) so the mount is an empty Docker-managed directory
+      # rather than a bind of a host path that does not exist -- docker would
+      # CREATE that path on the host, littering it with an empty /usr/lib/wsl.
+      - ${WSL_LIB_SRC:-wsl-lib-unused}:/usr/lib/wsl:ro
     restart: unless-stopped
+    # ORDERING, and it guards a silent failure rather than a cosmetic one.
+    # A named volume is populated by whichever container mounts it FIRST. If
+    # local-bash won that race it would create rocm-sdk EMPTY -- seeded from
+    # its own image, which has no /opt/rocm -- and then mount an empty SDK
+    # read-only with no error anywhere. So wait for the seeder to finish.
+    # `required: false` is what lets the same line stand on WSL2, where
+    # rocm-sdk is not in the active profile: without it, compose treats the
+    # dependency as unsatisfiable and refuses to start.
+    depends_on:
+      rocm-sdk:
+        condition: service_completed_successfully
+        required: false
+
+  # Populates the rocm-sdk named volume from AMD's ROCm image, then exits.
+  # Mounting an empty named volume over a path that has content in the image
+  # makes Docker copy that content into the volume, once, on first creation
+  # -- which is the whole mechanism here; there is no copy step to write.
+  #
+  # PROFILED, and this is the one difference that could not be a variable: on
+  # WSL2 there is no image to name, and a service with an empty `image:` is
+  # invalid rather than skipped. rocm-detect.sh sets COMPOSE_PROFILES to
+  # activate this only when ROCM_SOURCE=image.
+  #
+  # `pull_policy: missing` is what makes the pull part of the ordinary `up`
+  # rather than a separate manual step.
+  rocm-sdk:
+    profiles: ["rocm-image"]
+    image: ${ROCM_IMAGE:-}
+    pull_policy: missing
+    command: ["true"]
+    volumes:
+      - rocm-sdk:/opt/rocm
+
+volumes:
+  # Populated by the rocm-sdk service on a native boot; unused on WSL2,
+  # where ROCM_MOUNT_SRC is a bind path instead and this is never created.
+  rocm-sdk:
+  # Deliberately empty. Stands in for /usr/lib/wsl on boots that have no
+  # such tree, so the mount line above needs no conditional.
+  wsl-lib-unused:

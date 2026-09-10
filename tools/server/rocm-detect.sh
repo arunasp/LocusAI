@@ -140,12 +140,65 @@ if [ "${ROCM_PREFER_IMAGE:-0}" = "1" ] && [ -n "$ROCM_HOST_VERSION" ]; then
     fi
 fi
 
-# ------------------------------------------------------- compose overlay ----
+# ------------------------------------------------------- compose values ----
+# The keys above describe the boot; these are what docker-compose.yml
+# actually interpolates. They are derived here rather than branched on in
+# compose, which has no conditional syntax -- see that file's header.
+#
+# GPU_DEV_* are two FIXED SLOTS because a compose list cannot grow or shrink.
+# An unused slot gets a real harmless node, and the two are DIFFERENT nodes
+# on purpose: the same device twice is a duplicate entry.
+#
+# ROCM_MOUNT_SRC and WSL_LIB_SRC exploit compose short-syntax: a source with
+# a leading slash is a bind mount, one without is a named volume. So the same
+# compose line binds the host's ROCm on one boot and mounts a Docker-managed
+# volume on the other, with no branch anywhere.
 case "$ROCM_BOOT" in
-    wsl2)   COMPOSE_FILE="docker-compose.yml:docker-compose.wsl.yml" ;;
-    native) COMPOSE_FILE="docker-compose.yml:docker-compose.native.yml" ;;
-    *)      COMPOSE_FILE="docker-compose.yml" ;;
+    wsl2)
+        GPU_DEV_1=/dev/dxg
+        GPU_DEV_2=/dev/zero
+        WSL_LIB_SRC=/usr/lib/wsl
+        ;;
+    native)
+        GPU_DEV_1=/dev/kfd
+        GPU_DEV_2=/dev/dri
+        WSL_LIB_SRC=wsl-lib-unused
+        ;;
+    *)
+        GPU_DEV_1=/dev/null
+        GPU_DEV_2=/dev/zero
+        WSL_LIB_SRC=wsl-lib-unused
+        ;;
 esac
+
+if [ "$ROCM_SOURCE" = host ]; then
+    # Bind the whole /opt/rocm so the container sees the same layout the host
+    # has, including the versioned core-* directory the loader path points
+    # into. ROCM_HOST_PATH is already the resolved real directory, and the
+    # mount is 1:1 at /opt/rocm, so it is valid inside the container too.
+    ROCM_MOUNT_SRC=/opt/rocm
+    ROCM_BIN_PATH="$ROCM_HOST_PATH/bin"
+    ROCM_LIB_PATH="$ROCM_HOST_PATH/lib"
+    # WSL2 additionally needs the host's WSL GPU userspace on the loader
+    # path; natively that directory does not exist and must not appear.
+    [ "$ROCM_BOOT" = wsl2 ] && \
+        ROCM_LIB_PATH="$ROCM_LIB_PATH:/usr/lib/wsl/lib"
+    COMPOSE_PROFILES=""
+else
+    # Image-sourced: a named volume the rocm-sdk service seeds, and AMD's
+    # images use a plain /opt/rocm layout with no alternatives indirection.
+    ROCM_MOUNT_SRC=rocm-sdk
+    ROCM_BIN_PATH=/opt/rocm/bin
+    ROCM_LIB_PATH=/opt/rocm/lib
+    COMPOSE_PROFILES="rocm-image"
+fi
+
+# ------------------------------------------------------- compose overlay ----
+# ONE compose file covers both boots -- every difference is a variable value
+# above, and the single genuinely-conditional piece (the rocm-sdk seeder) is
+# a compose profile. So there is no overlay to select and COMPOSE_FILE is
+# emitted only for callers that want it stated explicitly.
+COMPOSE_FILE="docker-compose.yml"
 
 # ------------------------------------------------------- pull ---------------
 # Preflight the disk before a multi-gigabyte pull rather than discovering it
@@ -184,6 +237,13 @@ ROCM_HIP_TRIPLE=$ROCM_HIP_TRIPLE
 ROCM_SOURCE=$ROCM_SOURCE
 ROCM_IMAGE=$ROCM_IMAGE
 COMPOSE_FILE=$COMPOSE_FILE
+COMPOSE_PROFILES=$COMPOSE_PROFILES
+GPU_DEV_1=$GPU_DEV_1
+GPU_DEV_2=$GPU_DEV_2
+ROCM_MOUNT_SRC=$ROCM_MOUNT_SRC
+WSL_LIB_SRC=$WSL_LIB_SRC
+ROCM_LIB_PATH=$ROCM_LIB_PATH
+ROCM_BIN_PATH=$ROCM_BIN_PATH
 EOF
 }
 
@@ -193,7 +253,7 @@ if [ -n "$WRITE_ENV" ]; then
     # an interrupted run cannot leave a half-written .env behind.
     tmp="$WRITE_ENV.rocm-detect.$$"
     if [ -f "$WRITE_ENV" ]; then
-        grep -vE '^(ROCM_BOOT|GPU_DEVICES|ROCM_HOST_PATH|ROCM_HOST_VERSION|ROCM_HIP_TRIPLE|ROCM_SOURCE|ROCM_IMAGE|COMPOSE_FILE)=' \
+        grep -vE '^(ROCM_BOOT|GPU_DEVICES|ROCM_HOST_PATH|ROCM_HOST_VERSION|ROCM_HIP_TRIPLE|ROCM_SOURCE|ROCM_IMAGE|COMPOSE_FILE|COMPOSE_PROFILES|GPU_DEV_1|GPU_DEV_2|ROCM_MOUNT_SRC|WSL_LIB_SRC|ROCM_LIB_PATH|ROCM_BIN_PATH)=' \
             "$WRITE_ENV" > "$tmp" || :
     else
         : > "$tmp"

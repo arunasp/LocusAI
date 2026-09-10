@@ -73,6 +73,33 @@ versions, since nothing is released yet.
 
 ### Changed
 
+- `tools/server/docker-compose.yml` is now ONE file covering both the WSL2
+  and native-Linux boots. Compose has no conditional syntax, so every
+  difference is a variable value: two fixed device slots (`GPU_DEV_1/2`), and
+  a `${ROCM_MOUNT_SRC}` / `${WSL_LIB_SRC}` pair that exploits compose short
+  syntax — a source with a leading slash is a bind mount, one without is a
+  named volume — so the same line binds the host's ROCm on WSL2 and mounts a
+  Docker-managed volume on a host that has none. The one genuinely
+  conditional piece is a compose profile: a `rocm-sdk` service that seeds
+  that volume from AMD's image and exits, with `pull_policy: missing` so the
+  pull is part of an ordinary `up` rather than a separate step, and a
+  `depends_on: {condition: service_completed_successfully, required: false}`
+  so the main service cannot win the race and create the volume EMPTY while
+  `required: false` keeps the same line valid on WSL2 where the seeder is not
+  in the active profile. Both branches verified with `docker compose config`
+  against real and fixture env files before anything was installed.
+- `tools/server/start.sh` runs `rocm-detect.sh --write-env` before building,
+  so those values are populated rather than falling back to defaults.
+  Deliberately without `--pull`: compose's own `pull_policy` already fetches
+  the image during `up`, and a multi-gigabyte download should not be an
+  invisible part of starting the server.
+- `tools/pipeline.sh`'s `lint` stage now asserts executable bits against the
+  git index, checking BOTH the index and the working tree. The Filesystem
+  connector writes and edits at 644 and does not preserve 755, and the defect
+  is invisible to a read-back because the mode is not part of file content —
+  so it needed a stage rather than a rule. It caught its own introduction:
+  the edit that added it stripped `pipeline.sh`'s own bit, and the first run
+  went red naming that file.
 - Design docs moved from `core/` to `doc/core/`, one directory per
   component. `core/README.md` stays as the component entry point.
 - `tools/server` scope reduced to testing project code only: the gh CLI

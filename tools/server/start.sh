@@ -28,6 +28,22 @@ export PROJECT_DIR
 
 cd "${script_dir}"
 
+# Boot-specific values for docker-compose.yml. Compose has no conditional
+# syntax -- no `if`, and no way to include or omit a single list entry -- so
+# every difference between the WSL2 and native-Linux paths is expressed there
+# as a VARIABLE VALUE, and this computes them: which device nodes to pass
+# through, whether /opt/rocm is a bind of the host's install or a named
+# volume seeded from AMD's image, and whether the seeder's compose profile is
+# active at all. It merges them into .env, replacing only the keys it owns,
+# so PROJECT_DIR and anything else there survives.
+#
+# NOT run with --pull deliberately: on a boot with no host ROCm the image is
+# several gigabytes, and compose's own `pull_policy: missing` on the rocm-sdk
+# service already fetches it during `up`. Pass --pull by hand to fetch it
+# ahead of time instead of during a start.
+echo "Detecting GPU path and ROCm SDK source..." >&2
+"${script_dir}/rocm-detect.sh" --write-env "${script_dir}/.env"
+
 # Compose has no precondition hook (confirmed for this same v1 CLI in
 # opencode-model-eval), so this pre-flight -- phantom-mount-dir defense
 # for the ssh key + auto-extracting GH_TOKEN if missing -- runs here

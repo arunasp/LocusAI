@@ -33,7 +33,8 @@
 # Usage: tools/pipeline.sh <stage> [stage...]
 #   lint    - shellcheck every .sh, `node --check` every .js
 #             (excluding node_modules/dist), `python3 -m py_compile`
-#             every .py (excluding node_modules) under tools/. No
+#             every .py (excluding node_modules) under tools/, and
+#             an executable-bit check against the git index. No
 #             side effects. Skips a check silently-as-SKIP (not a
 #             failure) if the relevant tool isn't on PATH.
 #   test    - runs tools/desktop-extension/test's automated suite
@@ -82,6 +83,58 @@ run_stage() {
     return 0
 }
 
+# The Filesystem connector writes and edits files at 644 and does not
+# preserve an existing 755, so every connector edit to a tracked executable
+# silently clears its exec bit. This has recurred across four projects, and
+# the reason a text rule keeps failing is that THE DEFECT IS NOT IN THE FILE
+# CONTENT: a read-back returns exactly what was intended, because the mode is
+# not part of what is read. So it needs a stage, not a reminder.
+#
+# BOTH SIDES ARE ASSERTED, and that is not belt-and-braces. Checking only the
+# index passed while a working tree was already wrong on 2026-08-25 in
+# another repo, and the next `git commit -a` then staged the bad mode. The
+# index is what travels to a clone; the tree is what the next commit records.
+# A disagreement between them is itself the warning.
+#
+# LIMIT, stated because it cannot be closed here: a NEW file committed 644
+# that should have been 755 is invisible to this check, since git holds no
+# expectation to compare against. That case needs `git add --chmod=+x <path>`
+# at the moment of staging.
+check_modes() {
+    if ! command -v git &>/dev/null; then
+        echo "  (git not found on PATH -- exec bits not checked)" >&2
+        return 2
+    fi
+    if ! git -C "${repo_root}" rev-parse --git-dir &>/dev/null; then
+        echo "  (not a git checkout -- exec bits not checked)" >&2
+        return 2
+    fi
+    local had_failure=0 rec mode path
+    # -z and a NUL-delimited read, so a path containing whitespace cannot
+    # split into two records and quietly go unchecked.
+    while IFS= read -r -d '' rec; do
+        mode="${rec%% *}"
+        path="${rec#*$'\t'}"
+        case "${mode}" in
+            100755)
+                if [[ ! -x "${repo_root}/${path}" ]]; then
+                    echo "  modes: ${path} -- index 100755, NOT executable on disk" >&2
+                    echo "         (connector edit? restore with: chmod +x ${path})" >&2
+                    had_failure=1
+                fi
+                ;;
+            100644)
+                if [[ -x "${repo_root}/${path}" ]]; then
+                    echo "  modes: ${path} -- index 100644, but IS executable on disk" >&2
+                    echo "         (either chmod -x it, or stage the mode with git add --chmod=+x)" >&2
+                    had_failure=1
+                fi
+                ;;
+        esac
+    done < <(git -C "${repo_root}" ls-files -s -z)
+    return "${had_failure}"
+}
+
 stage_lint() {
     local had_failure=0
     local ran_any=0
@@ -124,6 +177,14 @@ stage_lint() {
     else
         echo "  (python3 not found on PATH -- .py files not syntax-checked)" >&2
     fi
+
+    local modes_rc=0
+    check_modes || modes_rc=$?
+    case "${modes_rc}" in
+        0) ran_any=1 ;;
+        2) : ;;
+        *) ran_any=1; had_failure=1 ;;
+    esac
 
     if [[ "${had_failure}" -eq 1 ]]; then
         return 1
