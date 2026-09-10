@@ -15,9 +15,13 @@ project's own container:
 | Compute units | 84 (`rocminfo`) / 42 reported by HIP as `multiProcessorCount` |
 | Wavefront | 32 (RDNA3) |
 | Fast f16 | yes |
-| VRAM pool | ~19.96 GiB, coarse-grained |
-| L3 / Infinity Cache | 80 MB |
+| Vector registers | 196,608 x 32-bit per WGP = 768 KiB (192 KiB per SIMD) |
 | LDS per workgroup | 64 KB |
+| L1 | 32 KB per CU (`rocminfo` only) |
+| L2 | 6 MiB (`l2CacheSize` and `rocminfo` agree) |
+| L3 / Infinity Cache | 80 MB (81920 KB, `rocminfo` only) |
+| Cacheline | 64 bytes |
+| VRAM pool | ~19.96 GiB, coarse-grained |
 | Max waves per CU | 32 |
 | XNACK | disabled |
 | Coherent host access | false |
@@ -40,6 +44,14 @@ overestimates available parallelism by exactly a factor of two. Take the
 number from the HIP runtime when sizing a launch, and from `rocminfo` when
 describing the hardware.
 
+**There is no HIP route to the 84, measured 2026-09-10.**
+`hipDeviceAttributePhysicalMultiProcessorCount` is documented as "all
+available physical compute units" and looked like the obvious way to get it,
+but on this platform it returns **42**, identical to
+`hipDeviceAttributeMultiprocessorCount`. Both queries succeed; they simply
+agree. So `rocminfo` remains the only source for the CU count, and a probe
+that wants both numbers has to read two tools.
+
 ## Known runtime warning
 
 A clean probe run still emits `Resource leak detected by SharedSignalPool,
@@ -51,7 +63,33 @@ second, different leak count later would otherwise look normal.
 ## Reaching the device
 
 The host runs WSL2, so the GPU arrives through `/dev/dxg` rather than a
-`/dev/dri` node. The working configuration, established by adding exactly
+`/dev/dri` node.
+
+**Two things below stopped being sufficient when the host moved to ROCm 7.14
+on 2026-08-18, and both were silent until `make gpu` was next run on
+2026-09-10.** Mounting `/opt/rocm` read-only is no longer enough on its own:
+
+1. That tree's `bin`, `lib` and `include` are **update-alternatives
+   symlinks into `/etc/alternatives`**, which the container does not mount,
+   so every one of them dangles and `hipcc` is unreachable at the canonical
+   path even though the tree is present. Docker resolves a symlink used *as*
+   a mount source but does not rewrite symlinks *inside* a mounted
+   directory, so no mount option fixes this. The resolved
+   `/opt/rocm/core-<ver>/...` paths work, which is why `core/Makefile`
+   discovers `ROCM_PATH` by looking for a real `bin/hipcc` rather than
+   assuming `/opt/rocm`. Do not mount `/etc/alternatives` to "fix" it: that
+   would overlay the container's own alternatives and break its `cc`/`g++`.
+2. **The host's ROCm 7.14 ships no HIP headers at all.**
+   `amdrocm7.14-gfx1100` was installed to repair Ollama's *runtime* path and
+   carries `hipcc`, `amdclang++` and LLVM but not the SDK. Since this
+   container mounts ROCm from the host by design, it inherits that gap
+   exactly. The headers come from `amdrocm-runtime-dev7.14` (494 KB,
+   installs to the real `/opt/rocm/core-7.14/include/hip`), extracted into
+   `core/gpu/.rocm-include` and passed with `-isystem`. That tree is
+   gitignored and version-pinned: regenerate it after any ROCm move rather
+   than trusting it.
+
+The rest of the working configuration, established by adding exactly
 what each failure reported missing:
 
 - device `/dev/dxg` — mode `crw-rw-rw-`, so no group membership and no
@@ -89,6 +127,37 @@ the driver hides.
 active working set fits inside it is in a different performance regime from
 one that does not, which makes working-set size a design target rather than
 an outcome.
+
+**The register file is larger than L2, which inverts the usual assumption.**
+42 WGPs x 768 KiB is 32.25 MiB of vector registers against 6 MiB of L2. The
+innermost tier has over five times the capacity of the one outside it, so
+"spill to the next level down" is not a size ladder here -- a working set
+that fits in registers has more room than one that merely fits in L2.
+
+**Cooperative launch is unsupported on this device, measured 2026-09-10:
+`cooperativeLaunch` reads 0.** This closes a route the tier model might
+otherwise have taken. LDS does not survive a kernel launch, so an
+activity-maintained ACTIVE tier that literally lives where the compute is
+would need a resident kernel -- and without cooperative launch a grid-wide
+barrier is illegal, so the whole-grid form of that is unavailable. Per-block
+persistence remains possible. `gpu/persist.cpp` probes this and skips its
+cooperative section rather than failing.
+
+**The memory hierarchy is not runtime-configurable, and one query lies.**
+`hipDeviceGetLimit` accepts only `hipLimitStackSize` and
+`hipLimitMallocHeapSize` (`hipLimitPrintfFifoSize` returns
+`hipErrorUnsupportedLimit`), and `hipLimit_t` has no persisting-cache member
+at all -- so `hipAccessPolicyWindow` exists with nothing to arm it, and
+`accessPolicyMaxWindowSize` reads 0 even though `persistingL2CacheMaxSize`
+advertises the whole 6 MiB. `hipDeviceSetCacheConfig` returns `hipSuccess`
+here despite AMD's docs saying it is unimplemented, i.e. it is a silently
+accepted no-op. Placement and eviction are hardware decisions: the only
+software lever is *negative* (non-temporal / no-allocate hints), so a
+hot/cold split has to work by SIZING a structure to stay resident, never by
+placing it. And **DRAM bandwidth cannot be derived from HIP on this
+platform**: `memoryBusWidth` 320 with `memoryClockRate` 1.25 GHz yields
+50 or 100 GB/s depending on how the field is read, against a real ~800 GB/s.
+The field is unreliable under GPU-PV; use the card's published figure.
 
 ## Fixed-function reuse
 

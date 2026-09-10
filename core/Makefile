@@ -18,9 +18,42 @@ PY       = $(VENV)/bin/python3
 # C side now needs libm explicitly. Kept as a variable rather than inlined so
 # a platform where libm is part of libc can override it to empty.
 LDLIBS  ?= -lm
-HIPCC   ?= hipcc
+# ROCM_PATH is RESOLVED, not assumed, and this is load-bearing on two counts.
+# (1) /opt/rocm's bin/lib/include are update-alternatives symlinks into
+# /etc/alternatives, which the GPU container does not mount, so they dangle
+# and a bare `hipcc` is not found even though the tree is mounted -- the
+# resolved /opt/rocm/core-<ver> path works. (2) Hardcoding a version would
+# break on the next ROCm move and on the native boot, where /opt/rocm may be
+# a normal tree. So: take the first candidate that actually has hipcc in it.
+ROCM_PATH ?= $(shell for d in /opt/rocm /opt/rocm/core-*; do [ -x "$$d/bin/hipcc" ] && echo "$$d" && break; done)
+HIPCC   ?= $(if $(ROCM_PATH),$(ROCM_PATH)/bin/hipcc,hipcc)
+
+# -std=c++17 is EXPLICIT: caps.cpp uses the struct-field detection idiom, and
+# hipcc's default standard has moved between ROCm releases.
+HIPCXXFLAGS ?= -std=c++17 -O2
+
+# The HIP SDK headers. Added ONLY when present, so a host whose ROCm ships
+# its own hip/ needs no flag and a checkout without the extracted tree still
+# builds there. See doc/core/HARDWARE.md for why this tree exists at all.
+ROCM_INCLUDE ?= gpu/.rocm-include
+HIPINC = $(if $(wildcard $(ROCM_INCLUDE)/hip/hip_runtime.h),-isystem $(ROCM_INCLUDE),)
+
+# WSL2 reaches the GPU through /dev/dxg and needs the host's WSL shim libs;
+# a native boot uses /dev/kfd + /dev/dri and has no such directory. Appended
+# only if it exists, so one line covers both boots.
+WSLLIB = $(if $(wildcard /usr/lib/wsl/lib),:/usr/lib/wsl/lib,)
+GPU_ENV = ROCM_PATH="$(ROCM_PATH)" HIP_PATH="$(ROCM_PATH)" \
+          LD_LIBRARY_PATH="$(ROCM_PATH)/lib$(WSLLIB)"
+
 GPUSRC   = gpu/probe.cpp
 GPUBIN   = $(BUILD)/gpu_probe
+CAPSSRC  = gpu/caps.cpp
+CAPSBIN  = $(BUILD)/gpu_caps
+CAPSLOG  = $(BUILD)/gpu-caps.log
+PERSRC   = gpu/persist.cpp
+PERBIN   = $(BUILD)/gpu_persist
+PERLOG   = $(BUILD)/gpu-persist.log
+MOCKDRV  = gpu/tests/gpu_mock_driver.py
 PREFIX  ?= /usr/local
 SRC      = src/store.c
 HDR      = src/locus.h
@@ -32,7 +65,7 @@ TESTBIN  = $(BUILD)/test_store
 # target shares its name with the gpu/ source directory, so without .PHONY
 # make sees the directory, considers the target satisfied, and silently does
 # nothing. Same collision the `build` target hit during the scaffold build.
-.PHONY: lint test build deploy verify e2e all clean gpu
+.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock
 
 # Sentinel file, deliberately NOT in .PHONY: a .PHONY listing would
 # force the install to re-run on every invocation regardless of
@@ -63,7 +96,7 @@ PIP_OFFLINE = $(if $(wildcard $(WHEELHOUSE)/*.whl),--no-index --find-links $(WHE
 # the C side; pycodestyle covers the Python layer.
 lint: .deps ## Static checks (gcc -fsyntax-only, pycodestyle)
 	$(CC) $(CFLAGS) -Isrc -fsyntax-only $(SRC) tests/test_store.c
-	$(PY) -m pycodestyle --max-line-length=79 py/locus tests
+	$(PY) -m pycodestyle --max-line-length=79 py/locus tests gpu/tests
 
 # No rule for $(BUILD) itself: it would collide with the phony `build`
 # target and silently drop the order-only prerequisite.
@@ -77,7 +110,7 @@ $(TESTBIN): $(SRC) $(HDR) tests/test_store.c
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -Isrc tests/test_store.c $(SRC) -o $@ $(LDLIBS)
 
-test: .deps build ## C behavioural suite + Python unittest suite
+test: .deps build caps-mock ## C behavioural suite + Python unittest suite + GPU-probe mock suite
 	./$(TESTBIN)
 	$(PY) -m unittest discover -s tests -p 'test_*.py'
 
@@ -116,11 +149,52 @@ gpu: ## Compile and run the GPU toolchain probe (skipped without hipcc)
 	@# be able to report success.
 	@if command -v $(HIPCC) >/dev/null 2>&1; then \
 		mkdir -p $(BUILD) && \
-		echo "$(HIPCC) -O2 -o $(GPUBIN) $(GPUSRC)" && \
-		$(HIPCC) -O2 -o $(GPUBIN) $(GPUSRC) && \
-		$(GPUBIN); \
+		echo "$(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(GPUBIN) $(GPUSRC)" && \
+		$(GPU_ENV) $(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(GPUBIN) $(GPUSRC) && \
+		$(GPU_ENV) $(GPUBIN); \
 	else \
 		echo "gpu: $(HIPCC) not found -- skipped"; \
+	fi
+
+# Same one-shell / && / skip-not-fail contract as `gpu` above, for the same
+# reasons -- see that comment before changing either.
+caps: ## Probe device capabilities and the memory hierarchy (skipped without hipcc)
+	@if command -v $(HIPCC) >/dev/null 2>&1; then \
+		mkdir -p $(BUILD) && \
+		echo "$(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(CAPSBIN) $(CAPSSRC)" && \
+		$(GPU_ENV) $(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(CAPSBIN) $(CAPSSRC) && \
+		$(GPU_ENV) $(CAPSBIN) $(CAPSLOG); \
+	else \
+		echo "caps: $(HIPCC) not found -- skipped"; \
+	fi
+
+# Gated: persist.cpp runs a deliberately long kernel and SELF-SKIPS unless
+# LOCUS_GPU_STRESS=1, so invoking this target is safe by default. Read the
+# warning at the top of gpu/persist.cpp before setting that variable.
+persist: ## Probe persistent-kernel viability (gated by LOCUS_GPU_STRESS=1)
+	@if command -v $(HIPCC) >/dev/null 2>&1; then \
+		mkdir -p $(BUILD) && \
+		echo "$(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(PERBIN) $(PERSRC)" && \
+		$(GPU_ENV) $(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(PERBIN) $(PERSRC) && \
+		$(GPU_ENV) $(PERBIN) $(PERLOG); \
+	else \
+		echo "persist: $(HIPCC) not found -- skipped"; \
+	fi
+
+# Needs NO GPU, no hipcc and no .venv -- that is the point. It is the only
+# stage that can guard the probes' reporting logic where `caps` can merely
+# skip. Deliberately uses $(PYTHON3) rather than the venv interpreter: the
+# driver imports only the stdlib, so depending on .deps would make it
+# unrunnable exactly where it is most needed. It SKIPS rather than fails
+# without a C++ compiler, because cicd_runner's worker has gcc and no g++ --
+# failing there would break the pipeline on the machine that runs it most.
+caps-mock: ## Verify GPU-probe branching against a mocked HIP runtime (no GPU needed)
+	@if command -v $(CXX) >/dev/null 2>&1; then \
+		CXX=$(CXX) $(PYTHON3) $(MOCKDRV); \
+	elif command -v c++ >/dev/null 2>&1; then \
+		CXX=c++ $(PYTHON3) $(MOCKDRV); \
+	else \
+		echo "caps-mock: no C++ compiler ($(CXX), c++) -- skipped"; \
 	fi
 
 # .venv is deliberately NOT removed here: rebuilding it is the

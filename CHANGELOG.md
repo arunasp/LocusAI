@@ -22,6 +22,41 @@ versions, since nothing is released yet.
   fails where `hipcc` is absent, so a checkout without a GPU still builds.
 - `cicd/transfer.py` with `pack` / `unpack` / `wheels` targets — checksummed
   base64 transfer, verified before extraction; offline wheelhouse install.
+- `core/gpu/caps.cpp` and a `caps` make target — reads the memory hierarchy
+  and the cache-control surface from the HIP runtime, and *tests* claims
+  rather than restating them: each capability query's result is reported, and
+  every assertion is an invariant of a working probe rather than a value
+  specific to this card, so the same source runs on either boot.
+- `core/gpu/persist.cpp` and a `persist` make target — occupancy bound,
+  cooperative-launch support and LDS state across ticks. Gated behind
+  `LOCUS_GPU_STRESS=1` because a long kernel on a GPU also driving a display
+  can trip a driver reset; the tick count starts low and is raised by hand.
+- `core/gpu/mock/hip/hip_runtime.h` and `core/gpu/tests/gpu_mock_driver.py`
+  with a `caps-mock` target, now part of `test` — 19 scenarios covering the
+  four tool-presence states, including the two usually missed (a field
+  *absent* from the runtime's struct, and a query *present but refusing*).
+  Needs no GPU, no hipcc and no venv, so it is the only stage that can guard
+  the probes' reporting logic where `caps` can merely skip.
+
+### Measured
+
+- Full memory hierarchy on `gfx1100`, recorded in `doc/core/HARDWARE.md`.
+  The design-relevant result: **32.25 MiB of vector registers against 6 MiB
+  of L2**, so the innermost tier is five times the one outside it and "spill
+  to the next level down" is not a size ladder here.
+- `cooperativeLaunch` is **0** on this device, confirmed by both the property
+  field and `hipDeviceGetAttribute`. A grid-wide barrier is therefore
+  illegal, which closes the whole-grid form of a resident-kernel ACTIVE
+  tier. Per-block persistence remains available; 8 blocks per WGP at 256
+  threads gives a 336-block, 86016-thread co-resident grid.
+- The hierarchy is not runtime-configurable. `hipLimit_t` has no
+  persisting-cache member, `accessPolicyMaxWindowSize` is 0, and
+  `hipDeviceSetCacheConfig` returns success as a silent no-op. The only
+  software lever is negative (non-temporal hints), so a hot/cold split must
+  work by sizing, never by placement.
+- `memoryClockRate` is unreliable under GPU-PV: it yields 50 or 100 GB/s
+  against a real ~800 GB/s, so DRAM bandwidth cannot be derived from HIP
+  here.
 
 ### Changed
 
@@ -51,6 +86,19 @@ versions, since nothing is released yet.
   boolean reading.
 - `gpu` and `build` make targets collided with same-named directories and
   silently did nothing. Both are now `.PHONY`.
+- **`make gpu` could no longer compile at all**, silently since the host
+  moved to ROCm 7.14 on 2026-08-18 — the target had not been re-run in
+  between. Two independent causes, both documented in
+  `doc/core/HARDWARE.md`: `/opt/rocm`'s `bin`/`lib`/`include` are
+  update-alternatives symlinks into `/etc/alternatives`, which the container
+  does not mount, so they dangle inside the mounted tree; and that ROCm
+  install ships no HIP headers at all. `core/Makefile` now *resolves*
+  `ROCM_PATH` by finding a real `bin/hipcc` instead of assuming
+  `/opt/rocm`, and picks up extracted headers via `-isystem` only when
+  present, so a host with a complete SDK needs no flag.
+- `lint` skipped `core/gpu/tests` entirely, so the new driver was outside
+  pycodestyle. Added to the target, and the seven long lines it found are
+  fixed.
 - Extension tests still asserted the pre-rewrite design and would have been
   committed red.
 
