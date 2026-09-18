@@ -303,22 +303,37 @@ class Cycle:
     def survey(self, max_fast=200, hold=10, amount=0.2, stride=1):
         """Discover which stable supports the dynamics actually produce.
 
-        Settles from each single-state injection and records the settled
-        active set. A support counts only if it holds for `hold`
-        consecutive fast steps -- SUPPORT stability, not value
-        convergence. Those are genuinely different: measured, the
-        support settles at about 45 steps while the value fixed point
-        takes about 198, and a field in a limit cycle never reaches the
-        latter at all. A chunk is identified by WHICH states are active
-        rather than by their exact values, so support stability is the
-        right criterion and the stricter one would reject usable chunks.
+        `stride` DEFAULTS TO 1, and that default is load-bearing rather
+        than tidy. You cannot discover more attractors than you have
+        injection points, so a stride of k caps the support count at
+        n/k BY CONSTRUCTION. With stride=8 the chunk counts came back 8
+        of 8 samples, 15 of 16, 27 of 32, 43 of 64 -- tracking the
+        sampling almost exactly -- and the resulting compression was
+        reported as 8.00x, 8.53x and 10.67x and read as an emergent
+        property of the dynamics. At stride=1 the real figures are
+        1.49x at n=64 and 1.24x at n=128. That is a five- to sevenfold
+        overstatement AND a different regime: most states turn out to
+        be their own attractor, which is capacity-maximum and
+        compression-near-zero.
 
-        Leaves the field as it found it, so surveying is a read.
+        A larger stride is still accepted for a quick look, but any
+        number taken from it must be checked with
+        `watchdog.not_harness_bound` against n/stride before it is
+        believed. `param_has_effect` is not sufficient here and did in
+        fact pass: the values differed across conditions, they just
+        differed because the harness parameter differed.
         """
         found = {}
         unstable = 0
         saved = list(self.field.a)
         saved_bias = list(self.field.bias)
+        # Support stability, NOT value convergence. They differ: the
+        # support settles at about 45 steps while the value fixed point
+        # takes about 198, and a field in a limit cycle never reaches
+        # the latter at all. A chunk is identified by WHICH states are
+        # active rather than by their values, so the stricter criterion
+        # would reject usable chunks. Leaves the field as it found it,
+        # so surveying is a read.
         for goal in range(0, self.n, stride):
             self.reset_state()
             last = None
@@ -343,6 +358,139 @@ class Cycle:
         self.field.set_state(saved)
         self.field.set_bias(saved_bias)
         return found, unstable
+
+    def survey_driven(self, stream, max_fast=200, hold=10, amount=0.2):
+        """The repertoire EXPERIENCE carved, not one an experimenter
+        enumerated.
+
+        WHY THE ENUMERATING SURVEY IS THE WRONG INSTRUMENT. `survey`
+        settles from one injection per state, which is a procedure no
+        biological system performs -- nothing in cortex asks how many
+        attractors it has. It also cannot answer the question it was
+        being used for: chunk count came back proportional to n at a
+        stable ratio (0.67, 0.80, 0.86 of the sample count across a
+        fourfold spread), and "larger fields support proportionally more
+        attractors" makes the SAME prediction as "the count is set by
+        how many injection points I chose". One injection per state ties
+        the sample count to n, so the two are indistinguishable by
+        construction.
+
+        Driving from a STREAM separates them. The stream's length is the
+        sample count and is independent of n, so the two can be varied
+        one at a time. And it is what actually happens: a repertoire is
+        whatever the input distribution has visited, so the count is a
+        property of the network AND its input, never the network alone.
+
+        `stream` is a sequence of cues -- state indices, repeats
+        expected, drawn from whatever distribution the caller is
+        modelling. Returns the same shape as `survey`.
+        """
+        found = {}
+        unstable = 0
+        saved = list(self.field.a)
+        saved_bias = list(self.field.bias)
+        for cue in stream:
+            self.reset_state()
+            last = None
+            held = 0
+            stable = None
+            for _ in range(max_fast):
+                self.field.inject(cue % self.n, amount)
+                self.field.step()
+                support = frozenset(i for i, _ in self.decide())
+                if support == last:
+                    held += 1
+                    if held >= hold:
+                        stable = support
+                        break
+                else:
+                    held = 0
+                    last = support
+            if stable is None:
+                unstable += 1
+            elif stable:
+                found.setdefault(stable, []).append(cue)
+        self.field.set_state(saved)
+        self.field.set_bias(saved_bias)
+        return found, unstable
+
+    def survey_saturating(self, cues, max_cues=4000, max_fast=200,
+                          hold=10, amount=0.2):
+        """Drive until the repertoire STOPS GROWING. Sample count is an
+        output, not a setting.
+
+        WHY THE THIRD DESIGN. Every previous attempt fixed an arbitrary
+        number and each one confounded the measurement differently:
+        `stride=8` tied the sample count to n, so chunk count could not
+        exceed n/8 and compression was reported five- to sevenfold high;
+        a fixed stream length of 64 drew more UNIQUE cues at larger n
+        through fewer birthday collisions, so richer sampling and a
+        bigger state space moved together; fixing unique cues instead
+        would then have pinned the very quantity under study. The error
+        is the same in all three: a constant standing in for a stopping
+        condition.
+
+        SATURATION IS AN EVENT AND IT IS SELF-DETECTING. New cues stop
+        yielding new supports once the repertoire is covered, so the run
+        ends when the system says it is done rather than when a counter
+        I chose runs out. The sample count then becomes a REPORTED
+        quantity -- and a useful one, since how much experience a
+        repertoire needs is itself worth knowing.
+
+        PATIENCE SCALES WITH WHAT HAS BEEN FOUND, so it is not another
+        constant: having found k supports, k consecutive cues bringing
+        nothing new is the evidence for saturation. More repertoire
+        demands more evidence, automatically. The floor of 4 is a
+        minimum amount of evidence rather than a target -- without it a
+        run could stop having found one support and missed one cue.
+
+        `cues` is a callable returning the next cue, so the input is a
+        SOURCE rather than a precomputed list of chosen length. Returns
+        (supports, unstable, cues_consumed, saturated).
+        """
+        found = {}
+        unstable = 0
+        consumed = 0
+        since_new = 0
+        saturated = False
+        saved = list(self.field.a)
+        saved_bias = list(self.field.bias)
+        while consumed < max_cues:
+            cue = cues() % self.n
+            consumed += 1
+            self.reset_state()
+            last = None
+            held = 0
+            stable = None
+            for _ in range(max_fast):
+                self.field.inject(cue, amount)
+                self.field.step()
+                support = frozenset(i for i, _ in self.decide())
+                if support == last:
+                    held += 1
+                    if held >= hold:
+                        stable = support
+                        break
+                else:
+                    held = 0
+                    last = support
+            if stable is None:
+                unstable += 1
+                continue
+            if not stable:
+                continue
+            if stable in found:
+                found[stable].append(cue)
+                since_new += 1
+            else:
+                found[stable] = [cue]
+                since_new = 0
+            if since_new >= max(4, len(found)):
+                saturated = True
+                break
+        self.field.set_state(saved)
+        self.field.set_bias(saved_bias)
+        return found, unstable, consumed, saturated
 
     def level_up(self, max_fast=200, hold=10, stride=1):
         """Form the next level from the chunks the dynamics produced.
@@ -417,34 +565,43 @@ class Cycle:
                        representatives=sorted(reps), supports=kept,
                        n_fine=self.n, unstable=unstable)
 
-    def drive_and_stack(self, evidence, window, max_levels=8,
+    def drive_and_stack(self, evidence, window=None, max_levels=8,
                         episodes=10, max_fast=120, stride=4,
                         outcome=1.0):
-        """Build levels until the top one fits `window`, or until a
-        level refuses. DEPTH AND COMPRESSION ARE BOTH OUTPUTS.
+        """Build levels until a level REFUSES. Depth, compression and
+        the local structure are all outputs; nothing here is a chosen
+        boundary.
 
-        WHY NOT DIVIDE BY A RATIO. Reaching 10^6 states down to 10^3
-        was estimated at "about five levels" from a measured 4x
-        compression, and that arithmetic is wrong in principle: 4x was
-        one configuration's result, compression moves with inhibition
-        (8.00x at beta 0.3, 4.27x at 0.5, 4.00x above), and it moves
-        again with anatomy -- a random kernel gave one attractor per
-        state and therefore NO compression where a ring kernel gave 4x.
-        A constant would be wrong at almost every operating point, and
-        predicting depth from it would be wrong everywhere.
+        `window` DEFAULTS TO NONE, and that matters. It used to default
+        to a number, and every run then terminated with "fits the
+        window" before reaching any limit -- so maximum depth was never
+        measured, and comparing cumulative compression across runs
+        compared arbitrary endpoints chosen by me. A measured 85.3x at
+        n=256 against 64.0x at n=512 looked like a real reversal and was
+        an artefact of where I had put the cutoff.
 
-        SO EACH LEVEL IS DRIVEN, NOT DERIVED. A level cannot chunk
-        before it has learned, and it learns from what the level BELOW
-        sends up: level 0 runs on the supplied evidence, and every level
-        above runs on the settled active set of the one beneath it. That
-        is what makes the whole stack driven by external input rather
-        than by a formula -- the input propagates upward, and each level
-        discovers its own compression from what actually arrived.
+        The stop condition already existed and is self-detecting: a
+        level refuses when its dynamics stop producing distinct chunks,
+        or when its complement is absorbing. That is situation
+        awareness rather than a threshold -- the level reports what it
+        can do, instead of being compared against a constant.
 
-        Stops for a reason it names: the top level fits the window, a
-        level refuses (nothing learned, one chunk, inadmissible
-        partition), or `max_levels` is reached. Returns a list of
-        per-level records; the LAST one carries the stop reason.
+        A window is still accepted, because a real consumer has one: a
+        task's working memory is a genuine constraint rather than an
+        arbitrary cutoff. It is just not the default, since measuring
+        the mechanism and serving a consumer are different questions.
+
+        A DENSITY OBSERVATION was tempting to turn into a gate. The
+        coarse fan-out saturates near 18.5 while a level grows, so a
+        level below roughly that size collapses to one chunk -- which
+        looked like a floor worth encoding. It is NOT encoded: it is a
+        property of the kernels measured so far, it would be wrong for a
+        different anatomy, and the refusal already catches the case it
+        would have guarded. Each level's fan-out is REPORTED instead, so
+        a reader sees the local situation rather than inheriting my
+        number.
+
+        Stops for a reason it names, and the last record carries it.
         """
         levels = []
         level = self
@@ -457,11 +614,11 @@ class Cycle:
                         else [ep % level.n])
                 level.task_step(evidence=pick, outcome=outcome,
                                 max_fast=max_fast)
-            if level.n <= window:
+            if window is not None and level.n <= window:
                 levels.append({
                     "depth": depth, "n": level.n, "chunks": None,
-                    "compression": None,
-                    "stop": "fits the window (%d <= %d)"
+                    "compression": None, "fanout": None,
+                    "stop": "fits the caller's window (%d <= %d)"
                             % (level.n, window),
                 })
                 break
@@ -469,14 +626,19 @@ class Cycle:
             if not result.admissible:
                 levels.append({
                     "depth": depth, "n": level.n, "chunks": None,
-                    "compression": None,
+                    "compression": None, "fanout": None,
                     "stop": "refused: %s" % result.reason,
                 })
                 break
+            # Observed, not asserted: the coarse kernel's own fan-out.
+            nz = sum(1 for row in result.kernel for v in row
+                     if v > 1e-9)
+            fanout = (nz / result.chunks) if result.chunks else 0.0
             levels.append({
                 "depth": depth, "n": level.n,
                 "chunks": result.chunks,
                 "compression": result.compression,
+                "fanout": fanout,
                 "stop": None,
             })
             # What this level settled on becomes the next level's input,
@@ -488,8 +650,8 @@ class Cycle:
         else:
             levels.append({
                 "depth": max_levels, "n": level.n, "chunks": None,
-                "compression": None,
-                "stop": "max_levels reached without fitting %d" % window,
+                "compression": None, "fanout": None,
+                "stop": "max_levels reached, still producing chunks",
             })
         return levels
 

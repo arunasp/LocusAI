@@ -80,7 +80,8 @@ class Field:
     """
 
     def __init__(self, n, kernel, rho=1.0, g=0.5, beta=0.1, leak=0.3,
-                 dt=1.0, a_max=10.0, floor=1e-12, noise=0.0, seed=0):
+                 dt=1.0, a_max=10.0, floor=1e-12, noise=0.0, seed=0,
+                 areas=None):
         if len(kernel) != n:
             raise ValueError("kernel is %d x ? but n is %d"
                              % (len(kernel), n))
@@ -137,6 +138,48 @@ class Field:
         # bit-identical under a permutation of the write order.
         self.noise = noise
         self._rng = random.Random(seed)
+        # PER-AREA COMPETITION. Inhibition in cortex is LOCAL: basket
+        # and PV interneurons normalise within a circuit, and there is
+        # no global inhibition level shared across all of cortex. A
+        # single global denominator was measured to make three
+        # requirements mutually exclusive -- at beta<=0.3 the whole
+        # field collapses to one attractor (repertoire 1, so its 64x
+        # "compression" compresses nothing into nothing), and at
+        # beta>=0.7 the repertoire is ~n with compression 1.03x, so no
+        # hierarchy is possible. No single beta satisfied sparsity,
+        # capacity and compression together, which falsified the
+        # one-control design rather than being a tuning failure.
+        #
+        # Areas change the arithmetic rather than the parameter.
+        # Competition is within an area, so an area compresses many
+        # states into few winners, while the field's repertoire is the
+        # COMBINATION of per-area winners and is therefore
+        # multiplicative in the number of areas. Compression is local
+        # and capacity is combinatorial, so they stop contending for
+        # one dial.
+        #
+        # Default is a single area covering everything, which is
+        # exactly the previous behaviour -- so this cannot silently
+        # change an existing result.
+        if areas is None:
+            areas = [list(range(n))]
+        seen = set()
+        for a_idx, members in enumerate(areas):
+            for i in members:
+                if not 0 <= i < n:
+                    raise ValueError("area %d has out-of-range state %d"
+                                     % (a_idx, i))
+                if i in seen:
+                    raise ValueError("state %d is in two areas" % i)
+                seen.add(i)
+        if len(seen) != n:
+            raise ValueError("areas cover %d of %d states"
+                             % (len(seen), n))
+        self.areas = [list(m) for m in areas]
+        self._area_of = [0] * n
+        for a_idx, members in enumerate(self.areas):
+            for i in members:
+                self._area_of[i] = a_idx
 
     # ------------------------------------------------------------ input --
     def inject(self, index, amount):
@@ -216,14 +259,19 @@ class Field:
         else:
             spont = None
         internal = 0.0
+        # Per-area sums, so the denominator below is LOCAL competition.
+        area_total = [0.0] * len(self.areas)
+        for i, v in enumerate(a):
+            area_total[self._area_of[i]] += v
         nxt = [0.0] * self.n
         idx = range(self.n) if order is None else order
         for j in idx:
             aj = a[j]
-            # Shunting: the denominator is the REST of the field, so a
-            # unit never inhibits itself and can never be driven below
-            # rest by inhibition.
-            others = total - aj
+            # Shunting against the rest of this unit's OWN AREA, so a
+            # unit never inhibits itself and competition does not cross
+            # area boundaries. With one area this is the whole field,
+            # which is the previous behaviour exactly.
+            others = area_total[self._area_of[j]] - aj
             denom = 1.0 + self.beta * others
             # The bias enters as an INPUT and is divided by the same
             # inhibition as everything else. Top-down drive competes on

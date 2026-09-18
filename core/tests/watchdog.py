@@ -128,6 +128,63 @@ def graded(outputs, min_distinct=3):
     return (PASS if d >= min_distinct else FAIL), "%d distinct" % d
 
 
+def not_harness_bound(values, bound, tol=0.15, min_n=3):
+    """A measured quantity must not TRACK a ceiling the harness imposed.
+
+    `values` are the measurements, `bound` the corresponding limit the
+    experiment itself made possible.
+
+    THE TEST IS CORRELATION, NOT PROXIMITY, and the first version of
+    this check got that wrong -- which is the same error it exists to
+    catch. It required every value to sit within a tolerance of its
+    bound, and on the real data (8, 15, 27, 43 against 8, 16, 32, 64)
+    the ratios were 1.00, 0.94, 0.84, 0.67: a consistent PROPORTIONAL
+    relationship, not saturation at a ceiling. Two of four fell outside
+    an arbitrary tolerance and the check passed on the very case it was
+    written from. Proximity was a number I chose; correlation is the
+    property.
+
+    THE CASE, 2026-09-18, and the most expensive error of the session
+    because it survived several commits. A hierarchy survey sampled
+    every 8th state as an injection point, and you cannot discover more
+    attractors than you have injection points -- so chunk count was
+    capped at n/stride by construction. Compression was reported as
+    8.00x, 8.53x and 10.67x and read as emergent. At stride=1 the real
+    figures are 1.16x to 2.88x, rising with level depth.
+
+    WHY param_has_effect MISSED IT: the values DID differ across
+    conditions, they just differed because the harness parameter
+    differed. A check on variation cannot catch that.
+    """
+    vals = [v for v in values if v is not None]
+    bounds = [b for b in bound if b is not None]
+    if len(vals) < min_n or len(vals) != len(bounds):
+        return REFUSE, ("%d values against %d bounds, need %d+"
+                        % (len(vals), len(bounds), min_n))
+    ratios = [v / b for v, b in zip(vals, bounds) if b > 0]
+    if len(ratios) < min_n:
+        return REFUSE, "no positive bounds"
+    # Two ways a measurement can be the harness's. Either it sits AT
+    # the bound throughout, or its ratio to the bound is suspiciously
+    # stable while the bound itself varies -- the second is what a
+    # proportional artefact looks like.
+    if all(r >= 1.0 - tol for r in ratios):
+        return FAIL, ("every value within %.0f%% of its bound (ratios "
+                      "%s) -- the measurement is the harness's"
+                      % (100 * tol, [round(r, 2) for r in ratios[:4]]))
+    spread = max(bounds) / min(bounds) if min(bounds) > 0 else 1.0
+    if spread >= 2.0:
+        mean_r = sum(ratios) / len(ratios)
+        dev = max(abs(r - mean_r) for r in ratios)
+        if mean_r > 0.5 and dev <= 0.25:
+            return FAIL, ("values track the bound proportionally "
+                          "(ratios %s over a %.1fx bound spread) -- "
+                          "the harness is setting the scale"
+                          % ([round(r, 2) for r in ratios[:4]], spread))
+    return PASS, ("ratios to bound %s"
+                  % [round(r, 2) for r in ratios[:4]])
+
+
 def in_responsive_range(values, lo=None, hi=None, rel=0.02, min_n=2):
     """Values compared ACROSS CONDITIONS must sit where the quantity can
     still respond -- not pinned at a bound, and not all identical.
@@ -286,6 +343,21 @@ def self_test():
             ("too few", ([0.5], 0.0, 1.0), REFUSE)]:
         vals, lo, hi = args
         g, d = in_responsive_range(vals, lo=lo, hi=hi)
+        add(name, g, want, d)
+
+    for name, args, want in [
+            ("tracks bound", ([8, 15, 27, 43], [8, 16, 32, 64]), FAIL),
+            ("all at bound", ([8, 16, 32], [8, 16, 32]), FAIL),
+            ("well below bound", ([3, 4, 5], [64, 64, 64]), PASS),
+            ("one at bound", ([63, 4, 5], [64, 64, 64]), PASS),
+            ("real stride-1 data",
+             ([43, 103, 220], [64, 128, 256]), FAIL),
+            ("genuinely independent",
+             ([20, 18, 22], [64, 128, 256]), PASS),
+            ("mismatched lengths", ([1, 2], [1]), REFUSE),
+            ("too few", ([1, 2], [64, 64]), REFUSE)]:
+        vals, bnd = args
+        g, d = not_harness_bound(vals, bnd)
         add(name, g, want, d)
 
     tmp = os.path.join(os.environ.get("TMPDIR", "/tmp"),

@@ -162,6 +162,18 @@ all: .deps lint build test verify ## Run the full pipeline
 # every trial unsettled because it checked the stricter criterion.
 #
 # Needs no GPU and no device, so it runs anywhere python3 does.
+#
+# RETRACTED AND RE-MEASURED 2026-09-18 with the SATURATING survey,
+# which drives until the repertoire stops growing so the sample count
+# is an OUTPUT. The attractor counts above came from designs that each
+# fixed an arbitrary number, and each confounded the result: a stride
+# tied the sample count to n, a fixed stream length drew more unique
+# cues at larger n through fewer collisions, and fixing unique cues
+# would have pinned the quantity under study. Same error every time --
+# a constant standing in for a stopping condition.
+# HONEST FIGURES: repertoire is about n at the working beta (15 of 32,
+# 52 of 64, 126 of 128, 254 of 256) and cues to saturate run about 5.7x
+# the repertoire (52, 299, 702, 1453). Capacity does scale with n.
 capacity: .deps ## Measure how many distinguishable states the field holds
 	@$(VENV)/bin/python3 tests/exp_capacity.py
 
@@ -182,6 +194,23 @@ capacity: .deps ## Measure how many distinguishable states the field holds
 # inhibition when that result came from a RANDOM kernel giving one
 # attractor per state. Anatomy decides whether the capacity-versus-
 # compression trade-off exists at all.
+#
+# THE JOINT OPERATING POINT ABOVE IS RETRACTED, 2026-09-18. Those 16
+# attractors and 4.00x came from an ENUMERATING survey whose count was
+# capped by its sampling stride; the saturating survey gives 62
+# attractors and 1.03x at beta 1.0.
+# NO JOINT OPERATING POINT EXISTS. Where compression is high (beta
+# <= 0.3) the repertoire is 1 or 2, so its apparent 64x compresses
+# nothing into nothing. Where sparsity is biological (beta >= 0.7) the
+# repertoire is about n and compression is 1.03x, so no level above is
+# possible. Beta 0.5 is the only middle ground and fails sparsity at
+# 10.9% active. That FALSIFIES the one-control design rather than being
+# a tuning failure.
+# Per-area competition was the candidate second control and was
+# measured NOT to provide it: splitting into A areas divides each
+# unit's inhibitory denominator by A, scaling the existing dial down
+# rather than adding a new one -- sparsity degraded from 2.3% to 16.7%
+# active while the repertoire collapsed from 60 to 3.
 operating-point: .deps ## Reconcile sparsity, capacity and compression against inhibition
 	@$(VENV)/bin/python3 tests/exp_operating_point.py
 
@@ -198,6 +227,20 @@ operating-point: .deps ## Reconcile sparsity, capacity and compression against i
 # because the top FITS rather than because a level failed. Compression
 # also varies per level (8.00x then 10.67x), which is the first actual
 # demonstration that it is emergent rather than constant.
+#
+# THE COMPRESSION FIGURES ABOVE ARE RETRACTED, 2026-09-18. The 85.3x,
+# 8.00x and 10.67x all came from a survey sampling every 8th state, and
+# you cannot discover more attractors than you have injection points --
+# the chunk count was capped at n/stride, so the compression WAS the
+# stride. At stride=1 per-level compression is 1.16x to 2.88x; with the
+# saturating survey the repertoire is about n at the working beta, which
+# puts real compression near 1.0x.
+# WHAT STANDS: the stack terminates on its own refusal rather than a
+# chosen cutoff, depth and compression are outputs, and each level is
+# driven by the settled active set of the one below. WHAT DOES NOT: any
+# compression number. Attractor-based chunking cannot compress a field
+# whose repertoire is already about n -- capacity and compression were
+# tied to the same object, which is why they contended.
 stack: .deps ## Drive the hierarchy upward and report depth and compression
 	@$(VENV)/bin/python3 tests/exp_stack.py
 

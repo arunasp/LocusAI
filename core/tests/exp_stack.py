@@ -50,8 +50,8 @@ def density(kernel):
     return frac, frac * n
 
 
-def run_stack(n, beta=1.0, window=8, seed=909, episodes=8,
-              max_fast=80, stride=8, max_levels=6):
+def run_stack(n, beta=1.0, window=None, seed=909, episodes=8,
+              max_fast=80, stride=1, max_levels=8):
     kernel = ring_kernel(n, seed)
     c = Cycle(n, kernel, beta=beta)
     seeds = [i for i in range(0, n, max(1, n // 8))]
@@ -79,50 +79,75 @@ def run_stack(n, beta=1.0, window=8, seed=909, episodes=8,
 
 
 def main():
-    print("=== does it stack, and how deep, as n grows? ===")
-    print("  n     depth  per-level compressions        cumulative  "
+    print("=== how deep does it go, with NO window? ===")
+    print("  The window is gone. Every earlier run stopped with 'fits")
+    print("  the window' before reaching any limit, so maximum depth")
+    print("  was never measured and cross-run compression compared")
+    print("  endpoints I had chosen. Now the only stops are a level")
+    print("  REFUSING or max_levels -- both properties of the run.")
+    print()
+    print("  n     depth  per-level compressions           cumulative  "
           "secs  stop")
     depths, cums = [], []
-    first_comps = []
-    for n in (64, 128, 256, 512):
+    records = []
+    for n in (64, 128, 256):
         r = run_stack(n)
+        records.append((n, r))
         depths.append(float(r["depth"]))
         cums.append(r["cumulative"])
-        if r["comps"]:
-            first_comps.append(r["comps"][0])
         shown = ", ".join("%.2fx" % x for x in r["comps"]) or "-"
-        print("  %-5d %-6d %-29s %-11.1f %-5.0f %s"
-              % (n, r["depth"], shown[:29], r["cumulative"],
-                 r["elapsed"], (r["stop"] or "")[:34]))
+        print("  %-5d %-6d %-32s %-11.1f %-5.0f %s"
+              % (n, r["depth"], shown[:32], r["cumulative"],
+                 r["elapsed"], (r["stop"] or "")[:40]))
+
+    print()
+    print("=== per-level structure, as observed ===")
+    print("  Fan-out is REPORTED, not gated. A level below roughly the")
+    print("  coarse fan-out collapses to one chunk, which was tempting")
+    print("  to encode as a floor -- it is not encoded, because it is a")
+    print("  property of these kernels and the refusal already catches")
+    print("  the case it would have guarded.")
+    print("  n     depth  level_n  chunks  compr    fanout  n/fanout")
+    for n, r in records:
+        for rec in r["levels"]:
+            if rec["chunks"] is None:
+                continue
+            fan = rec["fanout"] or 0.0
+            ratio = (rec["n"] / fan) if fan else 0.0
+            print("  %-5d %-6d %-8d %-7d %-8.2f %-7.1f %.1f"
+                  % (n, rec["depth"], rec["n"], rec["chunks"],
+                     rec["compression"], fan, ratio))
 
     print()
     print("=== checks on the sweep ===")
     for name, vals in (("depth vs n", depths),
-                       ("cumulative vs n", cums),
-                       ("level-0 compression vs n", first_comps)):
+                       ("cumulative vs n", cums)):
         status, detail = wd.param_has_effect(vals)
-        print("  [%s] %-26s %s" % (status, name, detail))
+        print("  [%s] %-24s %s" % (status, name, detail))
     status, detail = wd.monotone(cums, tol=0.5)
-    print("  [%s] %-26s %s" % (status, "cumulative monotone", detail))
+    print("  [%s] %-24s %s" % (status, "cumulative monotone", detail))
 
+    # THE CHECK THAT WAS MISSING, and whose absence let a five- to
+    # sevenfold overstatement survive several commits. Chunk count
+    # cannot exceed the number of injection points, so at stride k it
+    # is capped at n/k. With stride=8 every chunk count sat at that
+    # cap and compression was read as emergent. param_has_effect
+    # passed throughout, because the values did differ -- they just
+    # differed because the harness parameter differed.
+    measured, bounds = [], []
+    for n, r in records:
+        for rec in r["levels"]:
+            if rec["chunks"] is None:
+                continue
+            measured.append(float(rec["chunks"]))
+            bounds.append(float(len(range(0, rec["n"], 1))))
+    status, detail = wd.not_harness_bound(measured, bounds)
+    print("  [%s] %-24s %s" % (status, "not a harness artefact",
+                               detail))
     print()
-    print("=== the density floor on level size ===")
-    print("  n     fine_fanout  coarse_n  coarse_fanout  coarse_frac")
-    for n in (128, 256, 512):
-        r = run_stack(n)
-        res = r["cycle"].level_up(max_fast=80, stride=8)
-        if not res.admissible:
-            print("  %-5d %-12.1f refused: %s"
-                  % (n, r["fine_density"][1], res.reason[:40]))
-            continue
-        frac, fan = density(res.kernel)
-        print("  %-5d %-12.1f %-9d %-14.1f %.3f"
-              % (n, r["fine_density"][1], res.chunks, fan, frac))
-    print("  -> a trace chain sums over every excursion, so the coarse")
-    print("     kernel is denser than the fine one by construction. A")
-    print("     level must exceed that fan-out by some factor to hold")
-    print("     distinguishable states, which is the floor on level")
-    print("     size and the reason a small level collapses to one.")
+    print("  stop reasons are now properties of the run, so a depth")
+    print("  difference across n is a real difference rather than an")
+    print("  artefact of where a cutoff was placed.")
     return 0
 
 
