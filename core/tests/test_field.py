@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import watchdog as wd  # noqa: E402
 from locus.field import Field  # noqa: E402
+from locus.plasticity import Plasticity  # noqa: E402
 
 
 def ring_kernel(n, seed, reach=3):
@@ -381,6 +382,172 @@ class BiasedCompetition(unittest.TestCase):
         f = Field(4, ring_kernel(4, 24))
         with self.assertRaises(ValueError):
             f.set_bias([0.1, 0.2])
+
+
+class PrecisionUnderBias(unittest.TestCase):
+    """A bias must steer, never overrule. If top-down input can win
+    regardless of bottom-up evidence, the system sees what it expects
+    rather than what is there -- which is hallucination, not attention.
+
+    The hazard is measured, not hypothetical: at beta=20 a biased unit
+    took 92% of the field. The biological operating range found here is
+    beta between 0.1 and 0.5 (participation ratio 2.93% down to 0.54%,
+    against cortex at 1-2%), so these tests run in that range and check
+    that evidence still wins there.
+
+    Evidence is SUSTAINED, not injected once. That is the fair
+    comparison: the world keeps providing sensory input, and a standing
+    bias against a one-shot injection is a race a persistent signal
+    always eventually wins. Comparing a transient against a sustained
+    input would measure the asymmetry, not the arbitration.
+    """
+
+    def _settle(self, n, k, evidence_at, evidence, bias_at, bias,
+                beta, steps=60):
+        f = Field(n, k, beta=beta)
+        f.set_state([0.02] * n)
+        b = [0.0] * n
+        if bias_at is not None:
+            b[bias_at] = bias
+        f.set_bias(b)
+        for _ in range(steps):
+            if evidence_at is not None:
+                f.inject(evidence_at, evidence)
+            f.step()
+        return f
+
+    def test_evidence_outweighs_equal_bias(self):
+        # Equal strength, opposite targets: evidence must win. If a bias
+        # of the same magnitude as the evidence already dominates, there
+        # is no headroom at all.
+        n = 24
+        k = ring_kernel(n, 30)
+        for beta in (0.1, 0.3, 0.5):
+            f = self._settle(n, k, evidence_at=3, evidence=0.2,
+                             bias_at=15, bias=0.2, beta=beta)
+            ev, bi = f.share(3), f.share(15)
+            self.assertGreater(
+                ev, bi,
+                "at beta=%s an equal bias beat the evidence (%.4f vs "
+                "%.4f) -- top-down input is overruling, not steering"
+                % (beta, ev, bi),
+            )
+
+    def test_bias_must_exceed_evidence_to_override(self):
+        # Find the crossover and require it above parity. A crossover
+        # BELOW 1.0 would mean a weaker expectation beats stronger
+        # evidence, which is the failure this class exists for.
+        n = 24
+        k = ring_kernel(n, 31)
+        evidence = 0.2
+        crossover = None
+        ratios = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0]
+        shares = []
+        for r in ratios:
+            f = self._settle(n, k, evidence_at=3, evidence=evidence,
+                             bias_at=15, bias=evidence * r, beta=0.3)
+            shares.append((r, f.share(3), f.share(15)))
+            if crossover is None and f.share(15) > f.share(3):
+                crossover = r
+        status, detail = wd.in_responsive_range(
+            [b for _, _, b in shares], lo=0.0)
+        self.assertEqual(status, "pass",
+                         "bias share is pinned, so the sweep measures a "
+                         "bound rather than arbitration: %s" % detail)
+        self.assertIsNotNone(
+            crossover,
+            "bias never overrode evidence even at 5x -- the sweep does "
+            "not reach the crossover, so it is unmeasured: %r" % (shares,))
+        self.assertGreater(
+            crossover, 1.0,
+            "a bias WEAKER than the evidence overrode it at ratio %s: "
+            "%r" % (crossover, shares),
+        )
+
+    def test_derived_bias_cannot_point_at_unlearned_structure(self):
+        # THE fix for a measured failure. A hand-set bias at double
+        # strength on an unsupported state beat sustained evidence on a
+        # supported pattern, 0.588 against 0.406 -- expectation
+        # manufacturing structure the substrate never formed.
+        #
+        # The correction is not a parameter. A bias should be DRIVEN
+        # FROM OUTSIDE: learned from outcomes, so it can only point
+        # where outcomes have actually built something. A state with no
+        # learned incoming weight then gets exactly zero by
+        # construction, and no tuning can make it otherwise.
+        n = 20
+        p = Plasticity(rate=1.0)
+        # Learning happens only where activity co-occurred AND an
+        # outcome arrived: states 0-3 together, nothing at 17.
+        pattern = [0.0] * n
+        for i in range(4):
+            pattern[i] = 1.0
+        p.observe(pattern)
+        p.consolidate(1.0)
+
+        bias = p.projected_bias(n, sources=range(4), strength=0.4)
+        self.assertGreater(max(bias), 0.0, "nothing was learned at all")
+        self.assertEqual(
+            bias[17], 0.0,
+            "a derived bias pointed at a state with no learned weight "
+            "-- expectation can still manufacture structure",
+        )
+        for j in range(4, n):
+            self.assertEqual(bias[j], 0.0,
+                             "bias leaked to unlearned state %d" % j)
+
+    def test_bad_outcome_suppresses_the_bias_it_built(self):
+        # Suppression needs no separate rule: a bad outcome is a
+        # negative modulator, which depresses the same tagged pairs,
+        # which flips the derived bias negative.
+        n = 12
+        pattern = [0.0] * n
+        for i in range(3):
+            pattern[i] = 1.0
+
+        good = Plasticity(rate=1.0)
+        good.observe(pattern)
+        good.consolidate(1.0)
+        bad = Plasticity(rate=1.0)
+        bad.observe(pattern)
+        bad.consolidate(-1.0)
+
+        gb = good.projected_bias(n, sources=range(3), strength=0.4)
+        bb = bad.projected_bias(n, sources=range(3), strength=0.4)
+        self.assertGreater(max(gb), 0.0)
+        self.assertLess(min(bb), 0.0,
+                        "a bad outcome did not produce a negative bias")
+
+    def test_derived_bias_steers_the_field_it_learned_from(self):
+        # Having established it cannot point anywhere unlearned, it must
+        # still actually steer where it CAN point -- otherwise the
+        # guarantee is bought by making the mechanism inert.
+        n = 20
+        k = ring_kernel(n, 32)
+        p = Plasticity(rate=1.0)
+        pattern = [0.0] * n
+        for i in (8, 9, 10):
+            pattern[i] = 1.0
+        p.observe(pattern)
+        p.consolidate(1.0)
+        bias = p.projected_bias(n, sources=(8, 9, 10), strength=0.2)
+
+        free = self._settle(n, k, evidence_at=0, evidence=0.2,
+                            bias_at=None, bias=0.0, beta=0.3)
+        f = Field(n, k, beta=0.3)
+        f.set_state([0.02] * n)
+        f.set_bias(bias)
+        for _ in range(60):
+            f.inject(0, 0.2)
+            f.step()
+        biased_region = sum(f.share(i) for i in (8, 9, 10))
+        free_region = sum(free.share(i) for i in (8, 9, 10))
+        self.assertGreater(
+            biased_region, free_region,
+            "a derived bias did not steer toward what it learned "
+            "(%.4f vs %.4f) -- the guarantee was bought by making the "
+            "mechanism inert" % (biased_region, free_region),
+        )
 
 
 class Construction(unittest.TestCase):

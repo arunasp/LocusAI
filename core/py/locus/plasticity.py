@@ -181,6 +181,48 @@ class Plasticity:
     def live_weights(self):
         return len(self.weights)
 
+    def projected_bias(self, n, sources, strength=1.0):
+        """Bias DERIVED from learned weights, never set by a caller.
+
+        bias[j] = strength * (sum of w[i][j] for i in sources), scaled so
+        the largest magnitude is `strength`.
+
+        WHY THIS EXISTS RATHER THAN A SETTABLE BIAS. A hand-set bias is
+        an assertion, and a measurement here showed what that costs: a
+        bias at double strength on a state with NO structural support
+        beat sustained evidence on a supported pattern, 0.588 against
+        0.406. Expectation manufacturing structure the substrate never
+        formed is the dynamical form of the import path this project
+        exists to close.
+
+        Deriving it fixes that by construction rather than by tuning. A
+        state with no learned incoming weight from the sources gets
+        EXACTLY zero, so a bias cannot point somewhere nothing was
+        learned. Where it points, and how strongly, is then a
+        consequence of outcomes -- because that is the only thing that
+        moves a weight (see `consolidate`).
+
+        SUPPRESSION NEEDS NO SEPARATE RULE. A bad outcome is a negative
+        modulator, which depresses the tagged pairs, which yields a
+        NEGATIVE bias here. The same mechanism that steers toward a good
+        outcome steers away from a bad one.
+
+        Scaling by the peak rather than the sum keeps `strength` the
+        maximum magnitude regardless of how many weights contribute, so
+        a well-learned region cannot produce an arbitrarily large bias
+        just by having more edges.
+        """
+        bias = [0.0] * n
+        for i in sources:
+            for j in range(n):
+                w = self.weights.get((i, j))
+                if w:
+                    bias[j] += w
+        peak = max((abs(v) for v in bias), default=0.0)
+        if peak > 0.0:
+            bias = [strength * v / peak for v in bias]
+        return bias
+
     def as_kernel(self, n, floor=0.0):
         """Learned weights as a dense row-normalised kernel, for feeding
         back into a Field or a trace-chain computation.

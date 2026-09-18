@@ -162,10 +162,17 @@ def in_responsive_range(values, lo=None, hi=None, rel=0.02, min_n=2):
                       "%.6g) -- the quantity is not responding"
                       % (100 * rel, min(vals), max(vals)))
     at_bound = []
+    # NEAR-EXACT rather than scaled. An earlier version used
+    # `lo + rel * scale`, which flagged 0.0035 against lo=0.0 as
+    # floor-pinned purely because another value in the sweep was 0.9 --
+    # a genuinely small but RESPONDING value read as stuck. What matters
+    # is whether a value has been clipped AT the bound, so the tolerance
+    # belongs to the bound's own magnitude, not the data's spread.
+    eps = 1e-9
     for v in vals:
-        if hi is not None and v >= hi * (1.0 - rel):
+        if hi is not None and v >= hi - eps * max(1.0, abs(hi)):
             at_bound.append(("ceiling", v))
-        if lo is not None and v <= lo + rel * scale:
+        if lo is not None and v <= lo + eps * max(1.0, abs(lo)):
             at_bound.append(("floor", v))
     if at_bound:
         return FAIL, "pinned at a bound: %s" % at_bound[:3]
@@ -270,6 +277,8 @@ def self_test():
 
     for name, args, want in [
             ("responsive spread", ([0.2, 0.5, 0.8], 0.0, 10.0), PASS),
+            ("small but responding", ([0.0035, 0.12, 0.92], 0.0, 10.0),
+             PASS),
             ("all at ceiling", ([10.0, 10.0, 10.0], 0.0, 10.0), FAIL),
             ("all identical", ([0.5, 0.5, 0.5], None, None), FAIL),
             ("one at ceiling", ([0.2, 0.5, 10.0], 0.0, 10.0), FAIL),
