@@ -128,6 +128,80 @@ def graded(outputs, min_distinct=3):
     return (PASS if d >= min_distinct else FAIL), "%d distinct" % d
 
 
+class Budget:
+    """A safety CAP, explicitly not a stopping criterion.
+
+    The distinction is the whole point. A stopping criterion is an event
+    the system produces -- a repertoire stopping growing, a support
+    holding steady, a level refusing. A cap is a number chosen so a run
+    cannot loop forever. Both end a run, and conflating them is the
+    single most repeated error in this project's measurements:
+
+      a survey stride of 8 capped the attractor count at n/8, and the
+      resulting compression figure WAS the stride;
+      a stream length of 64 drew more unique cues at larger n through
+      fewer birthday collisions, so sampling richness and state-space
+      size moved together;
+      fixing unique cues instead would have pinned the very quantity
+      under study;
+      a window of 8 states ended every stack run before any limit, so
+      maximum depth was never measured;
+      a_max ended a bias sweep at the saturation ceiling, so the sweep
+      measured the cap at every inhibition level.
+
+    Five instances, five different confounds, one shape. Wrapping the
+    number makes the difference impossible to leave implicit: a run
+    reports whether it ended on its event or on its cap, and
+    `stopped_on_event` refuses to treat the second as a measurement.
+    """
+
+    def __init__(self, limit, name="budget"):
+        if limit < 1:
+            raise ValueError("a budget of %d cannot run at all" % limit)
+        self.limit = limit
+        self.name = name
+        self.used = 0
+
+    def spend(self):
+        """Consume one unit. False once the cap is reached."""
+        self.used += 1
+        return self.used < self.limit
+
+    @property
+    def hit(self):
+        return self.used >= self.limit
+
+    def __repr__(self):
+        return ("Budget(%s %d/%d%s)"
+                % (self.name, self.used, self.limit,
+                   ", HIT" if self.hit else ""))
+
+
+def stopped_on_event(flags, min_n=1):
+    """Every run compared in a sweep must have ended on its EVENT.
+
+    `flags` are the per-run booleans a measurement already reports --
+    `saturated`, `settled`, `admissible`. A run that ended on its cap
+    did not finish measuring, so its number is a lower bound at best
+    and an artefact at worst, and a sweep containing one cannot be
+    compared across conditions.
+
+    This is the structural form of a defect that recurred five times
+    and was caught case by case each time. Catching it case by case is
+    what failed; a check on how the run TERMINATED rides a fact every
+    measurement here already produces.
+    """
+    vals = [f for f in flags if f is not None]
+    if len(vals) < min_n:
+        return REFUSE, "only %d flags" % len(vals)
+    capped = sum(1 for f in vals if not f)
+    if capped:
+        return FAIL, ("%d of %d run(s) ended on a cap, not an event -- "
+                      "those numbers are not measurements"
+                      % (capped, len(vals)))
+    return PASS, "all %d run(s) ended on their own event" % len(vals)
+
+
 def not_harness_bound(values, bound, tol=0.15, min_n=3):
     """A measured quantity must not TRACK a ceiling the harness imposed.
 
@@ -359,6 +433,27 @@ def self_test():
         vals, bnd = args
         g, d = not_harness_bound(vals, bnd)
         add(name, g, want, d)
+
+    for name, args, want in [
+            ("all on event", ([True, True, True],), PASS),
+            ("one capped", ([True, False, True],), FAIL),
+            ("all capped", ([False, False],), FAIL),
+            ("none given", ([],), REFUSE)]:
+        g, d = stopped_on_event(*args)
+        add(name, g, want, d)
+
+    b = Budget(3, "cues")
+    add("budget starts unhit", b.hit, False, repr(b))
+    b.spend()
+    b.spend()
+    add("budget mid-run", b.hit, False, repr(b))
+    b.spend()
+    add("budget hit at limit", b.hit, True, repr(b))
+    try:
+        Budget(0)
+        add("budget rejects zero", False, True, "no raise")
+    except ValueError:
+        add("budget rejects zero", True, True, "raised")
 
     tmp = os.path.join(os.environ.get("TMPDIR", "/tmp"),
                        "_watchdog_readback.txt")
