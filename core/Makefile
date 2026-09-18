@@ -54,6 +54,13 @@ PERSRC   = gpu/persist.cpp
 PERBIN   = $(BUILD)/gpu_persist
 PERLOG   = $(BUILD)/gpu-persist.log
 MOCKDRV  = gpu/tests/gpu_mock_driver.py
+EXPSRC   = gpu/exp_excursion.cpp
+EXPBIN   = $(BUILD)/exp_excursion
+EXPLOG   = $(BUILD)/gpu-excursion.log
+# Overridable so the result can be SWEPT rather than taken on trust:
+#   make excursion EXPN=8192 EXPNA=2048
+EXPN    ?= 4096
+EXPNA   ?= 1024
 PREFIX  ?= /usr/local
 SRC      = src/store.c
 HDR      = src/locus.h
@@ -65,7 +72,7 @@ TESTBIN  = $(BUILD)/test_store
 # target shares its name with the gpu/ source directory, so without .PHONY
 # make sees the directory, considers the target satisfied, and silently does
 # nothing. Same collision the `build` target hit during the scaffold build.
-.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check rocm-headers rocm-image
+.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check rocm-headers rocm-image excursion
 
 # Sentinel file, deliberately NOT in .PHONY: a .PHONY listing would
 # force the install to re-run on every invocation regardless of
@@ -254,6 +261,38 @@ persist: hip-header-check ## Probe persistent-kernel viability (gated by LOCUS_G
 		$(GPU_ENV) $(PERBIN) $(PERLOG); \
 	else \
 		echo "persist: $(HIPCC) not found -- skipped"; \
+	fi
+
+# A STRUCTURE measurement, not a capability probe. It computes rho(P_BB)
+# and the EXACT excursion-return distribution for two partitions of the
+# same heavy-tailed kernel. That distribution's tail is what sets the
+# truncation depth in locus.trace_chain.truncated_trace, so this is how
+# the depth gets chosen FROM DATA instead of guessed.
+#
+# MEASURED 2026-09-18 at EXPN=4096 EXPNA=1024, and the result retired an
+# estimator: BOTH partitions gave rho(P_BB) = 0.93336, identical to five
+# decimals, while needing depth 6 versus 13 for 99% of returned mass
+# (mean excursion 1.96 versus 3.94 steps). So RHO CARRIES NO INFORMATION
+# ABOUT REQUIRED DEPTH -- what predicts it is whether the hubs sit in the
+# kept set or the complement. Keeping hubs in A shortens excursions,
+# because a wandering trajectory reaches a hub quickly and hubs return.
+# Both distributions were monotone geometric with no second mode, which
+# retired a predicted bimodality and means one depth per level suffices.
+# Note only 32% (hubs in A) and 60% (hubs in B) of LEAKED mass returned
+# within 16 steps, so "99% of returned mass" is not 99% of the leak: the
+# residue sets a truncation error floor no depth removes.
+excursion: hip-header-check ## Measure excursion depth on the device (skipped without hipcc)
+	@if command -v $(HIPCC) >/dev/null 2>&1; then \
+		mkdir -p $(BUILD) && \
+		echo "$(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(EXPBIN) $(EXPSRC)" && \
+		$(GPU_ENV) $(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(EXPBIN) $(EXPSRC) && \
+		{ $(GPU_ENV) $(EXPBIN) $(EXPN) $(EXPNA) > $(EXPLOG) 2>&1; \
+		  rc=$$?; \
+		  cat $(EXPLOG); \
+		  echo "[artifact] $(EXPLOG)  $$(stat -c%s $(EXPLOG)) bytes"; \
+		  exit $$rc; }; \
+	else \
+		echo "excursion: $(HIPCC) not found -- skipped"; \
 	fi
 
 # Needs NO GPU, no hipcc and no .venv -- that is the point. It is the only
