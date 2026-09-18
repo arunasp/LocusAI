@@ -417,6 +417,82 @@ class Cycle:
                        representatives=sorted(reps), supports=kept,
                        n_fine=self.n, unstable=unstable)
 
+    def drive_and_stack(self, evidence, window, max_levels=8,
+                        episodes=10, max_fast=120, stride=4,
+                        outcome=1.0):
+        """Build levels until the top one fits `window`, or until a
+        level refuses. DEPTH AND COMPRESSION ARE BOTH OUTPUTS.
+
+        WHY NOT DIVIDE BY A RATIO. Reaching 10^6 states down to 10^3
+        was estimated at "about five levels" from a measured 4x
+        compression, and that arithmetic is wrong in principle: 4x was
+        one configuration's result, compression moves with inhibition
+        (8.00x at beta 0.3, 4.27x at 0.5, 4.00x above), and it moves
+        again with anatomy -- a random kernel gave one attractor per
+        state and therefore NO compression where a ring kernel gave 4x.
+        A constant would be wrong at almost every operating point, and
+        predicting depth from it would be wrong everywhere.
+
+        SO EACH LEVEL IS DRIVEN, NOT DERIVED. A level cannot chunk
+        before it has learned, and it learns from what the level BELOW
+        sends up: level 0 runs on the supplied evidence, and every level
+        above runs on the settled active set of the one beneath it. That
+        is what makes the whole stack driven by external input rather
+        than by a formula -- the input propagates upward, and each level
+        discovers its own compression from what actually arrived.
+
+        Stops for a reason it names: the top level fits the window, a
+        level refuses (nothing learned, one chunk, inadmissible
+        partition), or `max_levels` is reached. Returns a list of
+        per-level records; the LAST one carries the stop reason.
+        """
+        levels = []
+        level = self
+        current = list(evidence)
+        for depth in range(max_levels):
+            # Drive this level from below and let it learn.
+            for ep in range(episodes):
+                level.reset_state()
+                pick = ([current[ep % len(current)]] if current
+                        else [ep % level.n])
+                level.task_step(evidence=pick, outcome=outcome,
+                                max_fast=max_fast)
+            if level.n <= window:
+                levels.append({
+                    "depth": depth, "n": level.n, "chunks": None,
+                    "compression": None,
+                    "stop": "fits the window (%d <= %d)"
+                            % (level.n, window),
+                })
+                break
+            result = level.level_up(max_fast=max_fast, stride=stride)
+            if not result.admissible:
+                levels.append({
+                    "depth": depth, "n": level.n, "chunks": None,
+                    "compression": None,
+                    "stop": "refused: %s" % result.reason,
+                })
+                break
+            levels.append({
+                "depth": depth, "n": level.n,
+                "chunks": result.chunks,
+                "compression": result.compression,
+                "stop": None,
+            })
+            # What this level settled on becomes the next level's input,
+            # expressed in the next level's own indices.
+            reps = result.representatives
+            active = [i for i, _ in level.decide()]
+            current = [reps.index(i) for i in active if i in reps]
+            level = level.next_level(result)
+        else:
+            levels.append({
+                "depth": max_levels, "n": level.n, "chunks": None,
+                "compression": None,
+                "stop": "max_levels reached without fitting %d" % window,
+            })
+        return levels
+
     def next_level(self, result, **kwargs):
         """A Cycle over the coarse kernel, so levels compose.
 

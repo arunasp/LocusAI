@@ -72,7 +72,7 @@ TESTBIN  = $(BUILD)/test_store
 # target shares its name with the gpu/ source directory, so without .PHONY
 # make sees the directory, considers the target satisfied, and silently does
 # nothing. Same collision the `build` target hit during the scaffold build.
-.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check rocm-headers rocm-image excursion capacity
+.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check rocm-headers rocm-image excursion capacity operating-point stack
 
 # Sentinel file, deliberately NOT in .PHONY: a .PHONY listing would
 # force the install to re-run on every invocation regardless of
@@ -164,6 +164,42 @@ all: .deps lint build test verify ## Run the full pipeline
 # Needs no GPU and no device, so it runs anywhere python3 does.
 capacity: .deps ## Measure how many distinguishable states the field holds
 	@$(VENV)/bin/python3 tests/exp_capacity.py
+
+# Inhibition serves three requirements that were each measured in their
+# OWN configuration, and so appeared to conflict: sparsity wants the
+# active set near the biological 1-2%, capacity wants enough
+# distinguishable states, and compression wants few enough attractors
+# that a level above is possible. Three numbers from three separate runs
+# cannot be traded off, because nothing guarantees the configurations
+# were comparable. This measures all three from ONE configuration per
+# beta, which is what makes them comparable at all.
+#
+# MEASURED 2026-09-18 at n=64: a joint operating point EXISTS, beta 0.7
+# to 3.0, giving PR/n 0.024 with 16 attractors and 4.00x compression at
+# beta 1.0. Two earlier readings were artefacts of cross-configuration
+# comparison -- sparsity's band was put at 0.1-0.5 when beta=0.1 in fact
+# leaves half the field active, and capacity was thought to want high
+# inhibition when that result came from a RANDOM kernel giving one
+# attractor per state. Anatomy decides whether the capacity-versus-
+# compression trade-off exists at all.
+operating-point: .deps ## Reconcile sparsity, capacity and compression against inhibition
+	@$(VENV)/bin/python3 tests/exp_operating_point.py
+
+# Drives the hierarchy upward until the top level fits a window, so
+# DEPTH AND COMPRESSION ARE OUTPUTS rather than parameters. Each level
+# is driven by the settled active set of the one below it, because a
+# level cannot chunk before it has learned and what it learns from is
+# what arrives from beneath.
+#
+# MEASURED 2026-09-18, and it corrected a conclusion. At n=64 the stack
+# reached one level at 4.6x and refused, from which I concluded levels
+# do not stack -- wrong, and drawn from a field too small to have state
+# at level 1. At n=256 it reaches two levels and 85.3x, terminating
+# because the top FITS rather than because a level failed. Compression
+# also varies per level (8.00x then 10.67x), which is the first actual
+# demonstration that it is emergent rather than constant.
+stack: .deps ## Drive the hierarchy upward and report depth and compression
+	@$(VENV)/bin/python3 tests/exp_stack.py
 
 # --- long-running HOST operations, logged ---------------------------------
 # These move megabytes to gigabytes and take minutes. They are deliberately
