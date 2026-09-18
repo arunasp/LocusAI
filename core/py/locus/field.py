@@ -63,6 +63,8 @@ kernel first means a dynamics bug cannot hide behind a learning bug,
 which is a confusion that has already cost several iterations.
 """
 
+import random
+
 
 class Field:
     """Continuous activation over ``n`` states, simultaneous update.
@@ -78,7 +80,7 @@ class Field:
     """
 
     def __init__(self, n, kernel, rho=1.0, g=0.5, beta=0.1, leak=0.3,
-                 dt=1.0, a_max=10.0, floor=1e-12):
+                 dt=1.0, a_max=10.0, floor=1e-12, noise=0.0, seed=0):
         if len(kernel) != n:
             raise ValueError("kernel is %d x ? but n is %d"
                              % (len(kernel), n))
@@ -109,6 +111,32 @@ class Field:
         self.bias = [0.0] * n
         self.steps = 0
         self.cycles = 0
+        # How much of what moves this field arrives from OUTSIDE.
+        # Measured rather than configured, for the same reason the bias
+        # is derived rather than asserted: a constant would be an
+        # assertion about the environment. An exponential average over
+        # recent steps, because what matters is how much input is
+        # arriving NOW -- a field being fed evidence is in a different
+        # regime from one running free during replay, and the kernel is
+        # only closed in the second.
+        self._pending_input = 0.0
+        self._input_share = 0.0
+        self.input_alpha = 0.2
+        # SPONTANEOUS ACTIVITY. Cortex is never silent, and this is what
+        # a uniform kernel restart was a bad stand-in for: the restart
+        # was deleted (inert under measurement, no biological
+        # counterpart, and it removed a correct refusal), and noise is
+        # the real mechanism. Together with leak it means no state traps
+        # activation forever -- but it acts on the FIELD, not on the
+        # kernel, so it never invents connectivity and never makes an
+        # absorbing complement look admissible. A coarse level over an
+        # absorbing partition still correctly does not exist.
+        #
+        # Seeded, and drawn BEFORE the update loop in fixed index order,
+        # so the simultaneity property holds: the result must stay
+        # bit-identical under a permutation of the write order.
+        self.noise = noise
+        self._rng = random.Random(seed)
 
     # ------------------------------------------------------------ input --
     def inject(self, index, amount):
@@ -118,6 +146,7 @@ class Field:
         constant every step is what turned an earlier measurement into a
         tautology."""
         self.a[index] = min(self.a_max, self.a[index] + amount)
+        self._pending_input += amount
 
     def set_bias(self, values):
         """Set the top-down bias, one value per state.
@@ -179,6 +208,14 @@ class Field:
         a = self.a
         drive = self._drive(a)
         total = sum(a)
+        # Drawn up front, in fixed index order, so a permuted write
+        # order cannot change which unit gets which sample.
+        if self.noise > 0.0:
+            spont = [self.noise * self._rng.random()
+                     for _ in range(self.n)]
+        else:
+            spont = None
+        internal = 0.0
         nxt = [0.0] * self.n
         idx = range(self.n) if order is None else order
         for j in idx:
@@ -193,12 +230,23 @@ class Field:
             # equal terms rather than overriding -- a bias that bypassed
             # normalisation would be a clamp wearing a different name.
             net = (self.rho * aj + self.g * drive[j] + self.bias[j]) / denom
+            if spont is not None:
+                net += spont[j]
+            internal += abs(net)
             v = aj + self.dt * (net - self.leak * aj)
             if v < 0.0:
                 v = 0.0
             elif v > self.a_max:
                 v = self.a_max
             nxt[j] = v
+        # Externally-arriving mass versus internally-generated drive,
+        # for this step. Accumulated as a running share so a caller can
+        # ask how grounded the field currently is.
+        ext = self._pending_input
+        self._pending_input = 0.0
+        share = (ext / (ext + internal)) if (ext + internal) > 0 else 0.0
+        self._input_share = ((1.0 - self.input_alpha) * self._input_share
+                             + self.input_alpha * share)
         self.a = nxt
         self.steps += 1
         # A COPY. Returning `nxt` itself hands the caller the internal
@@ -228,6 +276,21 @@ class Field:
         available to anything that needs them.
         """
         return [(i, v) for i, v in enumerate(self.a) if v > threshold]
+
+    def observed_input_share(self):
+        """Share of recent drive that arrived from outside, in [0, 1).
+
+        This is what makes an unlearned state escapable, and it is
+        MEASURED, not set. A field being fed evidence reports a high
+        share; one running free during replay decays toward zero, at
+        which point its kernel genuinely is closed and a coarse level
+        genuinely does not exist. Both are correct answers about
+        different regimes, which a constant could not express.
+
+        Capped just under 1.0 because a kernel of pure restart has no
+        learned structure left in it at all.
+        """
+        return min(0.95, max(0.0, self._input_share))
 
     def total(self):
         return sum(self.a)

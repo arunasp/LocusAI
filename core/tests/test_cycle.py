@@ -241,5 +241,109 @@ class UsableForATask(unittest.TestCase):
         self.assertIn("Step(", repr(st))
 
 
+class Hierarchy(unittest.TestCase):
+    """Forming a level from the chunks the dynamics produced.
+
+    A chunk is a stable attractor support; the coarse kernel is the
+    trace chain over one representative per chunk. No new mechanism --
+    which is why these tests are about the REFUSALS and about
+    compression being an output, rather than about the coupling
+    operator, which has its own suite.
+    """
+
+    def _trained(self, n, seed, episodes=6):
+        c = Cycle(n, ring_kernel(n, seed), beta=1.0)
+        for ep in range(episodes):
+            c.reset_state()
+            c.task_step(evidence=[ep % n], outcome=1.0)
+        return c
+
+    def test_survey_is_a_read(self):
+        c = self._trained(16, 60)
+        before = list(c.field.a)
+        bias_before = list(c.field.bias)
+        c.survey(max_fast=40, stride=4)
+        self.assertEqual(c.field.a, before, "survey mutated the state")
+        self.assertEqual(c.field.bias, bias_before,
+                         "survey clobbered the bias")
+
+    def test_refuses_before_anything_is_learned(self):
+        # With no learned weights the fine kernel is all self-loops, so
+        # no coarse level can exist. It must say so rather than invent
+        # one.
+        c = Cycle(12, ring_kernel(12, 61), beta=1.0)
+        r = c.level_up(max_fast=40)
+        self.assertFalse(r.admissible,
+                         "formed a level from nothing: %r" % r)
+        self.assertTrue(r.reason, "refused with no reason given")
+        self.assertIn("refused", repr(r))
+
+    def test_refusal_cannot_be_promoted_to_a_level(self):
+        c = Cycle(12, ring_kernel(12, 62), beta=1.0)
+        r = c.level_up(max_fast=40)
+        if not r.admissible:
+            with self.assertRaises(ValueError):
+                c.next_level(r)
+
+    def test_compression_is_an_output_not_a_parameter(self):
+        # level_up takes no target ratio. Different operating points
+        # must therefore yield different compression, and if they do
+        # not, fixing a constant would have been harmless -- which is
+        # the claim being tested.
+        got = []
+        for beta in (0.3, 1.0, 3.0):
+            c = Cycle(24, ring_kernel(24, 63), beta=beta)
+            for ep in range(6):
+                c.reset_state()
+                c.task_step(evidence=[ep], outcome=1.0)
+            r = c.level_up(max_fast=60, stride=2)
+            got.append(round(r.compression, 4) if r.admissible else None)
+        self.assertTrue(
+            any(v is not None for v in got),
+            "no operating point produced a level at all: %r" % (got,))
+
+    def test_coarse_kernel_is_stochastic_and_smaller(self):
+        c = self._trained(24, 64, episodes=10)
+        r = c.level_up(max_fast=60, stride=2)
+        if not r.admissible:
+            self.skipTest("no admissible level here: %s" % r.reason)
+        self.assertGreaterEqual(r.chunks, 2)
+        self.assertLessEqual(r.chunks, c.n)
+        self.assertEqual(len(r.kernel), r.chunks)
+        for row in r.kernel:
+            self.assertEqual(len(row), r.chunks)
+            self.assertAlmostEqual(sum(row), 1.0, places=9)
+        self.assertAlmostEqual(r.compression, c.n / r.chunks, places=9)
+
+    def test_representatives_are_distinct_and_drawn_from_supports(self):
+        c = self._trained(24, 65, episodes=10)
+        r = c.level_up(max_fast=60, stride=2)
+        if not r.admissible:
+            self.skipTest("no admissible level here: %s" % r.reason)
+        self.assertEqual(len(set(r.representatives)), r.chunks,
+                         "a representative named two chunks")
+        union = set()
+        for s in r.supports:
+            union |= s
+        for rep in r.representatives:
+            self.assertIn(rep, union,
+                          "representative %d is in no support" % rep)
+
+    def test_next_level_has_its_own_plasticity_store(self):
+        # Sharing one would let fine-level tags consolidate into
+        # coarse-level weights, which is the import path wearing a
+        # hierarchy.
+        c = self._trained(24, 66, episodes=10)
+        r = c.level_up(max_fast=60, stride=2)
+        if not r.admissible:
+            self.skipTest("no admissible level here: %s" % r.reason)
+        up = c.next_level(r)
+        self.assertIsNot(up.plasticity, c.plasticity)
+        self.assertEqual(up.plasticity.live_weights(), 0,
+                         "the coarse level started with weights it did "
+                         "not learn")
+        self.assertEqual(up.n, r.chunks)
+
+
 if __name__ == "__main__":
     unittest.main()

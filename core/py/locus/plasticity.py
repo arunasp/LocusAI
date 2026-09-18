@@ -230,8 +230,25 @@ class Plasticity:
         DERIVED, never stored: this builds a new matrix on each call and
         the weights remain the source of truth. Rows with no outgoing
         weight get a self-loop rather than a uniform row, because a
-        uniform row would invent connectivity the substrate never formed
-        -- which is the import path this project exists to avoid.
+        uniform row would invent connectivity the substrate never
+        formed.
+
+        A `input_rate` parameter briefly lived here, mixing in a uniform
+        restart so an unlearned row would not be absorbing. IT IS
+        DELETED, on three counts. Biologically there is no uniform
+        restart: nothing makes activation jump to a random state, and
+        external input arrives on SPECIFIC afferents -- which `inject`
+        already models. Empirically it was inert, failing
+        `param_has_effect` at 1 distinct value of 6 across two
+        different wirings. And it silently removed a correct refusal:
+        with every row carrying mass, nothing was ever absorbing, so a
+        coarse level formed where none should exist.
+
+        An absorbing complement means NO COARSE LEVEL EXISTS over that
+        partition. That is information, not an error to be patched. What
+        keeps a real substrate from trapping activation is leak plus
+        SPONTANEOUS ACTIVITY -- see `Field.noise`, which is the
+        biological mechanism the restart was standing in for.
         """
         rows = []
         for i in range(n):

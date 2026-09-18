@@ -72,7 +72,7 @@ TESTBIN  = $(BUILD)/test_store
 # target shares its name with the gpu/ source directory, so without .PHONY
 # make sees the directory, considers the target satisfied, and silently does
 # nothing. Same collision the `build` target hit during the scaffold build.
-.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check rocm-headers rocm-image excursion
+.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check rocm-headers rocm-image excursion capacity
 
 # Sentinel file, deliberately NOT in .PHONY: a .PHONY listing would
 # force the install to re-run on every invocation regardless of
@@ -137,6 +137,33 @@ e2e: verify ## Alias for verify
 # the host uid:gid does not have. Run it explicitly with a writable
 # prefix instead: make deploy PREFIX=$$HOME/.local
 all: .deps lint build test verify ## Run the full pipeline
+
+# Measures how many distinguishable states the field holds, which is
+# the blocker for anything task-shaped: a coding task must tell apart
+# the files it touches, the errors it sees and the actions it can take,
+# and that is hundreds rather than tens.
+#
+# MEASURED 2026-09-18, and the first reading was wrong for an
+# instructive reason. Capacity looked capped at about 11 states, which
+# would have meant the architecture was finished at toy size. It was a
+# bad operating point: at beta=0.1 the field has 2 attractors with one
+# basin holding 98%, while at beta>=1.0 it reaches 64 of 64 at n=64.
+# Capacity SCALES with the state space (12, 31, 60, 96 at n=32, 48, 64,
+# 96) and the dominant basin falls from 47% to 1%.
+#
+# TWO CORRECTIONS WORTH KEEPING. Modularity does NOT add capacity --
+# predicted it would, measured modular x4 at 4 attractors against
+# random's 60, and only blocks of four match random rather than beating
+# it; block size sets attractor size and capacity follows from how many
+# blocks fit. And SUPPORT stability is the criterion, not value
+# convergence: the support settles at ~45 steps while the value fixed
+# point takes ~198, so a field in a limit cycle has a perfectly stable
+# active set and never reaches a fixed point. An earlier run reported
+# every trial unsettled because it checked the stricter criterion.
+#
+# Needs no GPU and no device, so it runs anywhere python3 does.
+capacity: .deps ## Measure how many distinguishable states the field holds
+	@$(VENV)/bin/python3 tests/exp_capacity.py
 
 # --- long-running HOST operations, logged ---------------------------------
 # These move megabytes to gigabytes and take minutes. They are deliberately

@@ -550,6 +550,128 @@ class PrecisionUnderBias(unittest.TestCase):
         )
 
 
+class SpontaneousActivity(unittest.TestCase):
+    """Noise as the mechanism a kernel restart was standing in for.
+
+    Cortex is never silent. A uniform restart mixed into the kernel was
+    tried instead and deleted: inert under measurement
+    (`param_has_effect` gave 1 distinct value of 6, twice, across two
+    wirings), absent from biology (input arrives on specific afferents,
+    which `inject` models), and it silently removed a correct refusal by
+    making every row carry mass so nothing was ever absorbing.
+
+    The decisive difference is WHERE it acts. Noise drives the FIELD, so
+    it never invents connectivity and never makes an absorbing partition
+    look admissible -- which is what the last test here asserts.
+    """
+
+    def test_zero_noise_is_a_no_op(self):
+        n = 16
+        k = ring_kernel(n, 70)
+        a = Field(n, k, noise=0.0)
+        b = Field(n, k)
+        a.set_state([0.02] * n)
+        b.set_state([0.02] * n)
+        for _ in range(20):
+            a.step()
+            b.step()
+        self.assertEqual(a.a, b.a,
+                         "noise=0 changed the dynamics")
+
+    def test_noise_has_an_effect(self):
+        # The check the deleted parameter failed.
+        n = 16
+        k = ring_kernel(n, 71)
+        totals = []
+        for nz in (0.0, 0.001, 0.01, 0.05):
+            f = Field(n, k, noise=nz, seed=7)
+            f.set_state([0.02] * n)
+            for _ in range(40):
+                f.step()
+            totals.append(f.total())
+        status, detail = wd.param_has_effect(totals)
+        self.assertEqual(status, "pass",
+                         "noise is inert: %s" % detail)
+        for x, y in zip(totals, totals[1:]):
+            self.assertGreater(y, x - 1e-12,
+                               "more noise gave less activity: %r"
+                               % (totals,))
+
+    def test_simultaneity_survives_noise(self):
+        # Samples are drawn up front in fixed index order, so a
+        # permuted WRITE order cannot change which unit gets which
+        # sample. Without that the noise would silently reintroduce
+        # order dependence into an update that must be simultaneous.
+        n = 12
+        k = ring_kernel(n, 72)
+        order = list(range(n))
+        random.Random(1).shuffle(order)
+        a = Field(n, k, noise=0.01, seed=3)
+        b = Field(n, k, noise=0.01, seed=3)
+        a.set_state([0.05] * n)
+        b.set_state([0.05] * n)
+        for _ in range(6):
+            a.step()
+            b.step(order=order)
+        for j in range(n):
+            self.assertEqual(a.a[j], b.a[j],
+                             "noise made the update order-dependent "
+                             "at state %d" % j)
+
+    def test_seed_is_reproducible_and_distinguishing(self):
+        n = 12
+        k = ring_kernel(n, 73)
+
+        def run(seed):
+            f = Field(n, k, noise=0.02, seed=seed)
+            f.set_state([0.03] * n)
+            for _ in range(15):
+                f.step()
+            return list(f.a)
+
+        self.assertEqual(run(5), run(5), "same seed diverged")
+        self.assertNotEqual(run(5), run(6),
+                            "different seeds gave identical noise")
+
+    def test_noise_keeps_a_starved_field_alive(self):
+        # Leak alone drives a field with no drive to zero. Spontaneous
+        # activity is what stops any state trapping or losing all
+        # activation forever -- the job the restart was meant to do.
+        n = 10
+        k = ring_kernel(n, 74)
+        quiet = Field(n, k, rho=0.0, g=0.0, leak=0.9, noise=0.0)
+        noisy = Field(n, k, rho=0.0, g=0.0, leak=0.9, noise=0.01,
+                      seed=11)
+        for f in (quiet, noisy):
+            f.set_state([0.5] * n)
+            for _ in range(60):
+                f.step()
+        self.assertLess(quiet.total(), 1e-6,
+                        "leak did not starve the quiet field")
+        self.assertGreater(noisy.total(), 1e-6,
+                           "noise did not sustain any activity")
+
+    def test_noise_cannot_make_a_kernel_admissible(self):
+        # THE distinction that justified deleting the restart. Noise
+        # acts on the field; the kernel is untouched, so an absorbing
+        # complement stays absorbing and a coarse level over it still
+        # correctly does not exist.
+        n = 8
+        k = [[0.0] * n for _ in range(n)]
+        for i in range(n):
+            k[i][i] = 1.0
+        f = Field(n, k, noise=0.05, seed=2)
+        f.set_state([0.1] * n)
+        for _ in range(20):
+            f.step()
+        for i in range(n):
+            self.assertEqual(
+                f.kernel[i][i], 1.0,
+                "noise modified the kernel at state %d -- it must "
+                "drive the field only" % i)
+            self.assertAlmostEqual(sum(f.kernel[i]), 1.0, places=12)
+
+
 class Construction(unittest.TestCase):
 
     def test_kernel_shape_is_checked(self):
