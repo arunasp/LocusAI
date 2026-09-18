@@ -65,7 +65,7 @@ TESTBIN  = $(BUILD)/test_store
 # target shares its name with the gpu/ source directory, so without .PHONY
 # make sees the directory, considers the target satisfied, and silently does
 # nothing. Same collision the `build` target hit during the scaffold build.
-.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check
+.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check rocm-headers rocm-image
 
 # Sentinel file, deliberately NOT in .PHONY: a .PHONY listing would
 # force the install to re-run on every invocation regardless of
@@ -130,6 +130,52 @@ e2e: verify ## Alias for verify
 # the host uid:gid does not have. Run it explicitly with a writable
 # prefix instead: make deploy PREFIX=$$HOME/.local
 all: .deps lint build test verify ## Run the full pipeline
+
+# --- long-running HOST operations, logged ---------------------------------
+# These move megabytes to gigabytes and take minutes. They are deliberately
+# meant to be run BY HAND on the host, not through an agent tool call: a
+# large transfer inside a tool call gives no progress, no resumption, and a
+# timeout leaves partial state behind.
+#
+# Each tees so progress is visible live, captures the REAL exit status
+# rather than tee's, and enumerates its own artifacts with sizes at the
+# end -- a summary never says what it left out, so the log states every
+# path that landed.
+LOGDIR ?= logs
+STAMP   = $(shell date -u +%Y%m%dT%H%M%SZ)
+
+rocm-headers: ## HOST: fetch+extract HIP SDK headers (~0.5 MiB, logged)
+	@mkdir -p $(LOGDIR)
+	@log="$(LOGDIR)/$(STAMP)-rocm-headers.log"; \
+	echo "logging to $$log"; \
+	{ \
+	  echo "== rocm-headers $$(date -u +%FT%TZ) =="; \
+	  echo "-- host ROCm release, which the headers must match --"; \
+	  cat "$(ROCM_PATH)/.info/version" 2>&1 || echo "no host ROCm"; \
+	  $(PYTHON3) gpu/fetch_headers.py; \
+	  echo "fetch_exit=$$?"; \
+	} 2>&1 | tee "$$log"; \
+	echo "[artifact] $$log  $$(stat -c%s "$$log") bytes"; \
+	$(MAKE) --no-print-directory hip-header-check
+
+# Only needed on a boot with NO host ROCm -- the Mageia case. On WSL2 the
+# host tree is bind-mounted and this is unnecessary. 7.14 and 10.0 tags are
+# "-full" only at 7.40-7.70 GiB COMPRESSED, so budget ~20 GiB extracted;
+# rocm-detect.sh refuses under 20 GiB free rather than filling the disk.
+rocm-image: ## HOST: pull the version-matched ROCm image (GIGABYTES, logged)
+	@mkdir -p $(LOGDIR)
+	@log="$(LOGDIR)/$(STAMP)-rocm-image.log"; \
+	echo "logging to $$log"; \
+	{ \
+	  echo "== rocm-image $$(date -u +%FT%TZ) =="; \
+	  df -h . | tail -1; \
+	  ../tools/server/rocm-detect.sh --pull; \
+	  echo "pull_exit=$$?"; \
+	  docker images --format \
+	    '[artifact] image {{.Repository}}:{{.Tag}}  {{.Size}}' \
+	    2>/dev/null | grep -i rocm || echo "no rocm image present"; \
+	} 2>&1 | tee "$$log"; \
+	echo "[artifact] $$log  $$(stat -c%s "$$log") bytes"
 
 # Guards the ONE failure mode the extracted-header workaround introduces.
 # The tree in $(ROCM_INCLUDE) is version-pinned to whatever ROCm the host ran

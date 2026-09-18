@@ -37,6 +37,30 @@ versions, since nothing is released yet.
   *absent* from the runtime's struct, and a query *present but refusing*).
   Needs no GPU, no hipcc and no venv, so it is the only stage that can guard
   the probes' reporting logic where `caps` can merely skip.
+- `core/py/locus/trace_chain.py` and `core/tests/test_trace_chain.py` — the
+  level-coupling operator, with 10 exact property tests. Given a kernel over
+  the whole state space and a subset A, the trace on A is the kernel an
+  observer confined to A would measure — DERIVED, never stored, so there is
+  no shared cell and no second writer. Measured, not assumed:
+  **transitivity holds to 9 decimal places** (tracing to A then to B equals
+  tracing straight to B, which is what makes a hierarchy well defined);
+  the stationary measure restricted to A and renormalised is preserved to 8
+  places; naive block-averaging — what a sum tree computes — does NOT equal
+  the trace and is the one that gets the long-run measure wrong; and a
+  subset whose complement is CLOSED under the kernel has no trace at all,
+  which raises rather than returning a non-stochastic matrix. The exact
+  solve is cubic in the dropped set (0.14 ms at 8 dropped, 30.9 ms at 64),
+  so it is a consolidation-time operation; `truncated_trace` is the cheap
+  per-tick form, and on character prediction one excursion step recovered
+  the exact perplexity to within 0.06% where ignoring excursions cost 173%.
+- `core/gpu/fetch_headers.py` with `make rocm-headers` and `make rocm-image`
+  — the two long host operations, deliberately meant to be run by hand
+  rather than through a tool call, since a multi-gigabyte transfer inside
+  one gives no progress, no resumption, and a timeout that leaves partial
+  state. Each tees for live progress, writes a UTC-stamped log under
+  `core/logs/`, captures the real exit status rather than tee's, and
+  enumerates its own artifacts with sizes. `rocm-headers` chains into
+  `hip-header-check`, so it proves the fetch instead of assuming it.
 - `tools/server/rocm-detect.sh` and `tools/server/tests/rocm-detect.test.sh`
   — decides at invocation how this boot reaches the GPU and where its ROCm
   SDK comes from, emitting shell-assignable settings (`ROCM_BOOT`,
