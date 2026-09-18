@@ -8,6 +8,25 @@ versions, since nothing is released yet.
 
 ### Added
 
+- `Cycle.level_up`, `survey`, `survey_driven`, `survey_saturating` and
+  `drive_and_stack` — hierarchy from attractor supports, with the coarse
+  kernel derived by trace chain over one representative per chunk. Depth
+  and compression are outputs, never parameters; `drive_and_stack`
+  terminates on a level's own refusal rather than a chosen window.
+- `Field(areas=...)` — per-area (local) inhibition, following the biology
+  that there is no global inhibition level across cortex. Default is a
+  single area, byte-identical to the previous behaviour.
+- `Field(noise=..., seed=...)` — spontaneous activity, closing a gap
+  ARCHITECTURE already listed. Acts on the field rather than the kernel,
+  so it never invents connectivity nor makes an absorbing partition look
+  admissible.
+- `core/tests/exp_capacity.py`, `exp_operating_point.py`,
+  `exp_stack.py` with `make capacity`, `make operating-point` and
+  `make stack`.
+- `watchdog.Budget` and `watchdog.stopped_on_event` — the cap-versus-
+  criterion distinction as a structural check, after the same defect
+  recurred five times with five different confounds.
+
 - `core/py/locus/field.py` and `core/py/locus/cycle.py` with
   `core/py/locus/plasticity.py` — the perceive-retrieve-decide-learn
   loop, closed. `Field` is continuous activation updated as ONE
@@ -135,6 +154,37 @@ versions, since nothing is released yet.
 - `memoryClockRate` is unreliable under GPU-PV: it yields 50 or 100 GB/s
   against a real ~800 GB/s, so DRAM bandwidth cannot be derived from HIP
   here.
+
+### Retracted
+
+Four measurements recorded earlier in the same session did not survive
+an honest instrument, and the Makefile comments now carry the
+retraction beside the original claim rather than replacing it.
+
+- **Compression of 8.00×, 8.53× and 10.67×, and 85.3× cumulative over
+  two levels.** All came from a survey sampling every 8th state. You
+  cannot discover more attractors than you have injection points, so the
+  chunk count was capped at `n/stride` — the compression *was* the
+  stride. It survived several commits because `param_has_effect` passed
+  throughout: the values did differ across conditions, they just
+  differed because the harness parameter differed.
+- **The joint operating point at beta 0.7–3.0.** Re-measured with the
+  saturating survey, no joint operating point exists. Where compression
+  is high (beta ≤ 0.3) the repertoire is 1 or 2, so its apparent 64×
+  compresses nothing into nothing; where sparsity is biological
+  (beta ≥ 0.7) the repertoire is ≈ n and compression is 1.03×. That
+  falsifies the one-control design rather than being a tuning failure.
+- **Per-area competition as the missing second control.** Measured not
+  to provide it: splitting into A areas divides each unit's inhibitory
+  denominator by A, scaling the existing dial down rather than adding a
+  new one. Sparsity degraded from 2.3% to 16.7% active while the
+  repertoire collapsed from 60 to 3.
+
+What replaces them: repertoire ≈ n at the working beta (15 of 32, 52 of
+64, 126 of 128, 254 of 256), cues to saturation ≈ 5.7× the repertoire,
+and capacity scaling with the state space. The diagnosis for the open
+compression question is that capacity and compression were tied to the
+same object — a field at maximum capacity has nothing left to compress.
 
 ### Changed
 
