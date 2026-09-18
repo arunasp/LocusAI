@@ -36,7 +36,9 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "py"))
+sys.path.insert(0, os.path.dirname(__file__))
 
+import watchdog as wd  # noqa: E402
 from locus.field import Field  # noqa: E402
 
 
@@ -240,6 +242,145 @@ class Reads(unittest.TestCase):
         self.assertEqual(f.cycles, 1)
         with self.assertRaises(ValueError):
             f.cycle(fast=0)
+
+
+class BiasedCompetition(unittest.TestCase):
+    """Goal maintenance as a SEPARATE circuit biasing the pool.
+
+    Biology keeps these apart: pattern completion is recurrent attractor
+    dynamics inside a pool, while a goal is sustained by another
+    population and projects a biasing input in. The earlier measurement
+    that found an injected node inside its own attractor only 14% of the
+    time was asking a competitor whether it survived competition -- the
+    expected answer, and not a test of whether a goal can steer.
+    """
+
+    def test_bias_steers_which_attractor_forms(self):
+        n = 24
+        k = ring_kernel(n, 20)
+
+        def settle(bias_at=None, strength=0.0):
+            f = Field(n, k, beta=0.3)
+            f.set_state([0.02] * n)
+            f.inject(0, 1.0)
+            if bias_at is not None:
+                b = [0.0] * n
+                b[bias_at] = strength
+                f.set_bias(b)
+            for _ in range(80):
+                f.step()
+            return [f.share(i) for i in range(n)]
+
+        free = settle()
+        steered = settle(bias_at=12, strength=0.5)
+        moved = max(abs(a - b) for a, b in zip(free, steered))
+        self.assertGreater(
+            moved, 1e-3,
+            "bias changed nothing -- top-down input is not reaching the "
+            "competition",
+        )
+        self.assertGreater(
+            steered[12], free[12],
+            "the biased state did not gain share relative to unbiased",
+        )
+
+    def test_bias_is_persistent_not_consumed(self):
+        # inject() is an event; set_bias() is a standing input. If the
+        # bias were consumed this would decay like an injection.
+        # Checked below a_max so this cannot pass by saturating.
+        n = 12
+        f = Field(n, ring_kernel(n, 21), rho=0.0, g=0.0, leak=0.9)
+        b = [0.0] * n
+        b[4] = 1.0
+        f.set_bias(b)
+        for _ in range(30):
+            f.step()
+        held = f.a[4]
+        self.assertGreater(
+            held, 0.1,
+            "a standing bias decayed away -- it is being consumed like "
+            "an injection",
+        )
+        self.assertLess(held, f.a_max * 0.9,
+                        "saturated: this would pass without the bias "
+                        "being persistent at all")
+        f.clear_bias()
+        for _ in range(30):
+            f.step()
+        self.assertLess(f.a[4], held * 0.5,
+                        "clearing the bias did not release the state")
+
+    def test_bias_competes_rather_than_overriding(self):
+        # A bias that ignored normalisation would be a clamp wearing a
+        # different name. TWO distinct properties, and conflating them
+        # is what made the first version of this test wrong.
+        #
+        # (a) ABSOLUTE activation must FALL as inhibition rises. That is
+        #     what says the top-down input is being divided like every
+        #     other input rather than bypassing the competition.
+        # (b) SHARE RISES, and that is correct rather than a failure.
+        #     The biased unit carries the largest drive, so raising beta
+        #     suppresses every OTHER unit proportionally more. Sharper
+        #     competition, larger winner -- the mechanism that produces
+        #     winner-take-all at all.
+        #
+        # The first version asserted share would fall. It also read
+        # 10.0, 10.0, 10.0 -- a_max at every level -- because a bias of
+        # 1.0 into a field starting at 0.02 saturates regardless, so it
+        # was measuring the CEILING. Third instrument-not-model defect
+        # of the session, which is why watchdog.in_responsive_range now
+        # exists and is used here.
+        n = 20
+        k = ring_kernel(n, 22)
+        betas = (0.05, 1.0, 20.0)
+        absolute, shares = [], []
+        for beta in betas:
+            f = Field(n, k, beta=beta)
+            f.set_state([0.02] * n)
+            b = [0.0] * n
+            b[7] = 0.05
+            f.set_bias(b)
+            for _ in range(40):
+                f.step()
+            absolute.append(f.a[7])
+            shares.append(f.share(7))
+
+        status, detail = wd.in_responsive_range(absolute, lo=0.0,
+                                                hi=Field(1, [[1.0]]).a_max)
+        self.assertEqual(status, "pass",
+                         "activation is pinned, so the sweep measures a "
+                         "bound rather than the bias: %s" % detail)
+        self.assertGreater(
+            absolute[0], absolute[-1],
+            "absolute activation did not fall with inhibition -- the "
+            "bias is bypassing normalisation: %r" % (absolute,))
+        self.assertLess(
+            shares[0], shares[-1],
+            "share did not rise with inhibition -- divisive "
+            "normalisation is not sharpening the competition: %r"
+            % (shares,))
+
+    def test_zero_bias_is_a_no_op(self):
+        # Regression: adding the pathway must not change behaviour when
+        # it is unused.
+        n = 16
+        k = ring_kernel(n, 23)
+        a = Field(n, k)
+        a.inject(0, 1.0)
+        b = Field(n, k)
+        b.inject(0, 1.0)
+        b.set_bias([0.0] * n)
+        for _ in range(20):
+            a.step()
+            b.step()
+        for j in range(n):
+            self.assertEqual(a.a[j], b.a[j],
+                             "an all-zero bias changed the dynamics")
+
+    def test_bias_length_is_checked(self):
+        f = Field(4, ring_kernel(4, 24))
+        with self.assertRaises(ValueError):
+            f.set_bias([0.1, 0.2])
 
 
 class Construction(unittest.TestCase):

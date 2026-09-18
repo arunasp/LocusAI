@@ -29,6 +29,15 @@ as a result before being caught:
 PENDING-RULE CHECKS give executable form to three rules that had only
 prose, which is why they kept failing:
 
+  in_responsive_range
+                    values compared across conditions must not be pinned
+                    at a bound or all identical. THREE defects in one
+                    session had this shape -- a dwell metric reading a
+                    dead trace, a log-slope on a non-exponential
+                    trajectory, and a sweep that read the saturation cap
+                    at every level. In each the instrument was wrong
+                    rather than the model, which is the hardest kind to
+                    notice because the numbers look fine.
   read_back         write-then-read equality. A write tool's success
                     report is not evidence about what landed.
   artifacts_listed  a script must enumerate every path it writes, with
@@ -117,6 +126,50 @@ def graded(outputs, min_distinct=3):
         return REFUSE, "only %d non-null" % len(vals)
     d = len(set(vals))
     return (PASS if d >= min_distinct else FAIL), "%d distinct" % d
+
+
+def in_responsive_range(values, lo=None, hi=None, rel=0.02, min_n=2):
+    """Values compared ACROSS CONDITIONS must sit where the quantity can
+    still respond -- not pinned at a bound, and not all identical.
+
+    THREE defects in one session had this shape, and in every case the
+    instrument was wrong rather than the model:
+
+      a dwell metric returned the full run length on a DEAD trace,
+      because it thresholded against its own first value and so compared
+      zero with half of zero;
+
+      a log-slope was fitted to a trajectory that is nowhere near
+      exponential, and the bifurcation estimate built on its sign had to
+      be retracted;
+
+      a bias sweep read 10.0, 10.0, 10.0 -- the saturation cap at every
+      inhibition level -- so the comparison measured the CEILING rather
+      than the response.
+
+    A sweep whose outputs are pinned proves nothing about the parameter,
+    whichever direction the assertion then points. Check this BEFORE
+    comparing values across conditions, not after the comparison looks
+    odd.
+    """
+    vals = [v for v in values if v is not None]
+    if len(vals) < min_n:
+        return REFUSE, "only %d non-null" % len(vals)
+    span = max(vals) - min(vals)
+    scale = max(abs(v) for v in vals) or 1.0
+    if span <= rel * scale:
+        return FAIL, ("all values within %.1f%% of each other (%.6g.."
+                      "%.6g) -- the quantity is not responding"
+                      % (100 * rel, min(vals), max(vals)))
+    at_bound = []
+    for v in vals:
+        if hi is not None and v >= hi * (1.0 - rel):
+            at_bound.append(("ceiling", v))
+        if lo is not None and v <= lo + rel * scale:
+            at_bound.append(("floor", v))
+    if at_bound:
+        return FAIL, "pinned at a bound: %s" % at_bound[:3]
+    return PASS, "span %.6g over %d values" % (span, len(vals))
 
 
 # ---------------------------------------------------- pending-rule checks -
@@ -213,6 +266,17 @@ def self_test():
                              ("binary", [1, 2], REFUSE),
                              ("step", [1, 1, 1, 2], FAIL)]:
         g, d = graded(outs)
+        add(name, g, want, d)
+
+    for name, args, want in [
+            ("responsive spread", ([0.2, 0.5, 0.8], 0.0, 10.0), PASS),
+            ("all at ceiling", ([10.0, 10.0, 10.0], 0.0, 10.0), FAIL),
+            ("all identical", ([0.5, 0.5, 0.5], None, None), FAIL),
+            ("one at ceiling", ([0.2, 0.5, 10.0], 0.0, 10.0), FAIL),
+            ("one at floor", ([0.0, 0.5, 0.8], 0.0, 10.0), FAIL),
+            ("too few", ([0.5], 0.0, 1.0), REFUSE)]:
+        vals, lo, hi = args
+        g, d = in_responsive_range(vals, lo=lo, hi=hi)
         add(name, g, want, d)
 
     tmp = os.path.join(os.environ.get("TMPDIR", "/tmp"),

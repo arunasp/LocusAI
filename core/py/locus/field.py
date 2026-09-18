@@ -96,6 +96,17 @@ class Field:
         self.a_max = a_max
         self.floor = floor
         self.a = [0.0] * n
+        # Top-down bias from a SEPARATE population, not a member of this
+        # pool. Biology keeps goal maintenance and pattern completion in
+        # different circuits: completion is recurrent attractor dynamics
+        # within a pool, while a goal is sustained elsewhere and projects
+        # a biasing input into it. That distinction is why an earlier
+        # measurement here was the wrong experiment -- injecting a node
+        # INTO the pool and asking whether it survived found 14%, which
+        # is the expected answer for a competitor and says nothing about
+        # whether a goal can steer. A bias does not compete for a slot;
+        # it tilts which attractor forms.
+        self.bias = [0.0] * n
         self.steps = 0
         self.cycles = 0
 
@@ -107,6 +118,24 @@ class Field:
         constant every step is what turned an earlier measurement into a
         tautology."""
         self.a[index] = min(self.a_max, self.a[index] + amount)
+
+    def set_bias(self, values):
+        """Set the top-down bias, one value per state.
+
+        PERSISTENT: unlike `inject`, this is not consumed. It is a
+        standing input from elsewhere, so it keeps arriving every step
+        until changed -- which is what maintaining a goal means, and why
+        it is not the clamp that an earlier measurement mistook for
+        persistence. A clamp overwrites the state; this adds an input
+        that the field's own competition still has to resolve.
+        """
+        if len(values) != self.n:
+            raise ValueError("expected %d values, got %d"
+                             % (self.n, len(values)))
+        self.bias = list(values)
+
+    def clear_bias(self):
+        self.bias = [0.0] * self.n
 
     def set_state(self, values):
         if len(values) != self.n:
@@ -159,7 +188,11 @@ class Field:
             # rest by inhibition.
             others = total - aj
             denom = 1.0 + self.beta * others
-            net = (self.rho * aj + self.g * drive[j]) / denom
+            # The bias enters as an INPUT and is divided by the same
+            # inhibition as everything else. Top-down drive competes on
+            # equal terms rather than overriding -- a bias that bypassed
+            # normalisation would be a clamp wearing a different name.
+            net = (self.rho * aj + self.g * drive[j] + self.bias[j]) / denom
             v = aj + self.dt * (net - self.leak * aj)
             if v < 0.0:
                 v = 0.0
