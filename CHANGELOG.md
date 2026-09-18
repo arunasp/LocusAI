@@ -8,6 +8,47 @@ versions, since nothing is released yet.
 
 ### Added
 
+- `core/py/locus/field.py` and `core/py/locus/cycle.py` with
+  `core/py/locus/plasticity.py` — the perceive-retrieve-decide-learn
+  loop, closed. `Field` is continuous activation updated as ONE
+  simultaneous event: self-excitation, lateral drive, shunting
+  inhibition and leak all computed from the same previous state and
+  applied together. It replaced a staged `excite -> spread -> kwta ->
+  record` pipeline, which was wrong about the biology in a way that
+  produced a false result — staging made competition a sort, the sort
+  gave a step function that was reported as a property of the dynamics,
+  and it discarded the sub-threshold activations an eligibility trace
+  and a deferral threshold both need. `Plasticity` holds eligibility
+  traces and a three-factor gate: coincidence sets a local decaying
+  tag, and a weight moves only when a broadcast modulator arrives while
+  that tag is alive, so **activity alone changes nothing**. One
+  modulator with a sign does both potentiation and depression, so
+  suppression needs no separate rule. `Cycle` is the wiring and adds no
+  mechanism; the order is load-bearing, since learning reads the
+  SETTLED state rather than the input.
+- A second pathway in `Field` for top-down bias, because biology keeps
+  goal maintenance and pattern completion in different circuits.
+  **The bias is derived, never asserted** — `Plasticity.projected_bias`
+  builds it from learned weights, so a state with no learned incoming
+  weight gets exactly zero and attention cannot point where nothing was
+  built. That replaced a hand-set bias after a measurement showed the
+  cost: a bias at double strength on a structurally unsupported state
+  beat sustained evidence on a supported pattern, 0.588 against 0.406.
+- `core/tests/watchdog.py` — 34 self-tested checks that FAIL rather than
+  warn, each written after a specific defect that had already been
+  reported as a result. It also gives executable form to three rules
+  that previously existed only as prose: write-then-read-back,
+  artifact enumeration verified against disk, and an absolute-claim
+  guard requiring an evidence marker in the same sentence.
+- `core/tests/exp_persistence.py` and `make excursion` — the two
+  measurements the design now rests on. Persistence is an ATTRACTOR
+  property: over 64 injections at n=64 the field settles into 11
+  distinct attractors of mean size 3.8, and the injected state ends up
+  inside its own attractor only 14% of the time. Excursion depth is set
+  by partition choice rather than by spectral radius — both partitions
+  measured rho(P_BB) = 0.93336 identically while needing depth 6 versus
+  13, and at n=6144 rho *fell* while excursions lengthened, so reading
+  it as a depth proxy gives the wrong sign.
 - `doc/core/METHODOLOGY.md`, `doc/core/AUTONOMIC.md` and
   `doc/core/HARDWARE.md` — design content that previously existed only as
   working notes. AUTONOMIC states an open decision the code currently

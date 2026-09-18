@@ -190,21 +190,83 @@ via `locus_excite()` — while a tick-incremented lease age is not.
 preemption: if every slot is leased, `locus_put()` fails and encoding
 stops. A long-held or leaked lease is a deadlock with no reclaim path.
 
+## What the loop now does
+
+Three modules added 2026-09-18, all verified against the real device
+rather than in a sandbox. Each is deliberately separate, so a surprising
+behaviour belongs to one of them rather than to the wiring.
+
+- `py/locus/field.py` — continuous activation over the state space,
+  updated as ONE simultaneous event. Every term (self-excitation,
+  lateral drive through the kernel, shunting inhibition, leak) is
+  computed from the same previous state and applied together. This
+  replaced a staged `excite -> spread -> kwta -> record` pipeline, which
+  was wrong about the biology in a way that produced a false result:
+  staging it made competition a sort, the sort produced a step function
+  that was reported as a property of the dynamics, and it discarded the
+  sub-threshold activations that an eligibility trace and a deferral
+  threshold both need. A second pathway carries top-down bias from
+  outside the pool, since biology keeps goal maintenance and pattern
+  completion in different circuits.
+- `py/locus/plasticity.py` — eligibility traces and a three-factor gate.
+  Coincident activity sets a local decaying tag; a weight moves only
+  when a broadcast modulator arrives while the tag is alive. Activity
+  alone changes nothing, which is what separates this from Hebbian
+  learning. One modulator with a sign does both potentiation and
+  depression, so suppression needs no separate rule.
+- `py/locus/cycle.py` — the perceive-retrieve-decide-learn loop, closed.
+  Settle, decide, learn from the SETTLED state, then derive the next
+  bias. It adds no mechanism of its own.
+- `py/locus/trace_chain.py` — the level-coupling operator. A coarse
+  level is DERIVED from a fine one, never stored, so there is no shared
+  cell and no second writer.
+
 ## Not implemented
 
 Beyond the gaps noted above:
 
-- Stochastic k-winners-take-all. The current implementation is
-  deterministic top-k; competition should be noisy, with tonic/phasic
-  neuromodulation setting its sharpness.
+- Noise in the competition. The deterministic top-k is gone — `Field`
+  competes by graded shunting inhibition with no sorting anywhere — but
+  competition is still noiseless, and tonic/phasic neuromodulation does
+  not yet set its sharpness. `beta` is the only sharpness control, and
+  the 1–2% biological active band sits between 0.1 and 0.5 (measured by
+  participation ratio); above 2.0 it saturates and does nothing further.
 - A gate on re-stabilisation. Consolidation is neuromodulator-gated in
-  biology; here anything may currently re-stabilise.
+  biology; here anything may currently re-stabilise. Note the three-
+  factor gate in `plasticity.py` is the same shape and could carry it.
 - Competition at two scales — features within a moment, and whole
   episodes against each other. Only one scale exists.
-- A recurrent layer. Pattern completion needs genuine recurrent
-  connectivity for attractor dynamics; everything here is feedforward.
 - Per-area competition. A single global `active_k` lets one busy area
   starve the rest.
+- Chunk formation. The state space cannot yet change: nothing forms a
+  new unit standing for a composite. This is the blocker for hierarchy
+  and therefore for summarising anything larger than one active set,
+  and it is blocked on an unanswered threshold question rather than on
+  code — a proposed stopping criterion was measured and found to have
+  no force.
 - Sensory encoding, motor output, sleep-phase consolidation, and the
   pattern-separation stage that must precede completion.
-- Any GPU backend. Nothing here has run against a compute device.
+- A language renderer. No English chain-of-thought, which the
+  transparency requirement needs. Measured ceiling on what one could
+  ever report: about 24 states carry real activation per tick while 4
+  are selected, so a narration covers roughly 17% of what competed.
+- Any GPU kernel for the substrate itself. The device probes DO run —
+  `make gpu`, `caps`, `persist` and `excursion` all execute against
+  gfx1100 — but no part of the store, field or plasticity has a device
+  implementation. Kernel shapes are deliberately not frozen while the
+  shapes above are still changing.
+
+### What recurrence produced, once it existed
+
+The recurrent layer listed here as missing now exists, and measuring it
+changed a design assumption worth recording. Over 64 injections at
+n=64 the field settles into 11 distinct attractors of mean size 3.8
+units — and the injected state ends up inside its own attractor only
+14% of the time. So persistence is a property of a SET, not of a node:
+an injection selects a basin and then dissolves into something it is
+not part of. Three candidate single-unit persistence mechanisms were
+ruled out before this was understood, all of them sharing the
+assumption that a node is what persists.
+
+One attractor captured 48 of those 64 basins, so capacity is currently
+about 11 distinguishable states. That is the next thing to measure.
