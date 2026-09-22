@@ -110,6 +110,14 @@ class Field:
         # whether a goal can steer. A bias does not compete for a slot;
         # it tilts which attractor forms.
         self.bias = [0.0] * n
+        # INTRINSIC EXCITABILITY, per unit, set by the unit's own activity
+        # history rather than by any input (Desai, Rutherford & Turrigiano
+        # 1999): a unit that wins far more than its population lowers its
+        # own excitability, a silent one raises it. Enters like the bias
+        # and is divided by the same inhibition; zero leaves the update
+        # bit-identical. Written by a homeostatic process, never by the
+        # pathway reading this field.
+        self.excit = [0.0] * n
         self.steps = 0
         self.cycles = 0
         # How much of what moves this field arrives from OUTSIDE.
@@ -203,6 +211,13 @@ class Field:
                              % (self.n, len(values)))
         self.bias = list(values)
 
+    def set_excitability(self, values):
+        """Replace the intrinsic excitability of every unit."""
+        if len(values) != self.n:
+            raise ValueError("excitability has %d entries, not %d"
+                             % (len(values), self.n))
+        self.excit = [float(v) for v in values]
+
     def clear_bias(self):
         self.bias = [0.0] * self.n
 
@@ -274,7 +289,8 @@ class Field:
             # inhibition as everything else. Top-down drive competes on
             # equal terms rather than overriding -- a bias that bypassed
             # normalisation would be a clamp wearing a different name.
-            net = (self.rho * aj + self.g * drive[j] + self.bias[j]) / denom
+            net = (self.rho * aj + self.g * drive[j] + self.bias[j]
+                   + self.excit[j]) / denom
             if spont is not None:
                 net += spont[j]
             internal += abs(net)

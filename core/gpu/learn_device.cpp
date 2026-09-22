@@ -9,10 +9,10 @@
 // HIP, or without hipcc as plain C++ with std::stable_sort in place of the
 // device radix sort.
 //
-// Usage: learn_device IN OUT
+// Usage: learn_device IN OUT [KNOW]
 //   IN  int32 U, int32 T, double rate, int32 kind (0 branch, 1 cls,
 //       2 control), int32 flags (1 metaplastic, 2 hippocampus,
-//       4 cortex metaplastic), int32 top;
+//       4 cortex metaplastic, 8 coincidence-gated readout), int32 top;
 //       per table: int32 k, uint32 seed, int32 offset, int32 size;
 //       train: int64 nbytes, bytes, int32 nfiles, int64 start[nfiles+1];
 //       int64 nsched, int64 sched[nsched] (main-store positions in order);
@@ -20,6 +20,12 @@
 //       scored: int64 nbytes, bytes, int32 nfiles, int64 start[nfiles+1],
 //       int32 nval_files; int32 nlam, double lam[nlam]
 //   OUT double val[nlam], double test[nlam], int64 nval, int64 ntest
+//   KNOW (optional, learners only) the learned stores, sparse: char[8]
+//       "LOCUSKN1", int32 U, int32 nstores, double rate; per store (the
+//       neocortex or branch store, then the hippocampus): int32 flags
+//       (1 metaplastic, 2 top-order units only), int64 events[U],
+//       int64 rowptr[U+1], uint8 byte[nnz], double w[nnz]. A weight never
+//       moved stays exactly 0.0, so only non-zero weights are kept.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -92,6 +98,17 @@ HD inline int32_t unit_at(const Enc &e, const uint8_t *d, int64_t g,
 HD inline bool slot_is_top(const Enc &e, int j)
 {
     return j > 0 && e.t[j - 1].k == e.top;
+}
+
+// Coincidence gate (tests/exp_match_gate.py): a row counts in proportion
+// to its agreement with the sum of the other active rows.
+// cos(r, D - r) from dot(r, D), |r|^2 and |D|^2.
+HD inline double gate_of(double dot_rd, double n2r, double n2d)
+{
+    double den = sqrt(n2r) * sqrt(n2d - 2.0 * dot_rd + n2r);
+    double c = (n2r > 0.0 && den > 0.0) ? (dot_rd - n2r) / den : 0.0;
+    double sc = c >= 0.0 ? sqrt(c) : -sqrt(-c);
+    return 1.0 / (1.0 + exp(-sc));
 }
 
 HD inline double step(double w, int b, int nxt, double rate, double loc,
@@ -251,9 +268,24 @@ __global__ void count_rows(Enc e, const uint8_t *d, const int64_t *fs,
     }
 }
 
+__device__ double block_sum(double v, double *sh)
+{
+    sh[threadIdx.x] = v;
+    __syncthreads();
+    for (int s = B / 2; s > 0; s >>= 1) {
+        if ((int)threadIdx.x < s)
+            sh[threadIdx.x] += sh[threadIdx.x + s];
+        __syncthreads();
+    }
+    double t = sh[0];
+    __syncthreads();
+    return t;
+}
+
 __global__ void score(Enc e, const uint8_t *d, const int64_t *fs, int32_t nf,
-                      const int64_t *pos, int kind, const double *Wc,
-                      const double *Wh, const unsigned int *cnt,
+                      const int64_t *pos, int kind, int gated,
+                      const double *Wc, const double *Wh,
+                      const unsigned int *cnt,
                       const unsigned long long *tot, double *dnext,
                       double *dpos)
 {
@@ -279,6 +311,32 @@ __global__ void score(Enc e, const uint8_t *d, const int64_t *fs, int32_t nf,
         }
     }
     double v = Wh ? dc + dh : dc;
+    if (gated && kind != 2) {
+        double n2d = block_sum(v * v, sh);
+        double gv = 0.0;
+        int rows = 0;
+        for (int j = 0; j <= e.T; ++j) {
+            int32_t u = unit_at(e, d, g, p, j);
+            if (u < 0)
+                continue;
+            double r = Wc[(int64_t)u * B + b];
+            double dr = block_sum(r * v, sh);
+            double n2r = block_sum(r * r, sh);
+            if (n2r > 0.0)
+                ++rows;
+            gv = gv + gate_of(dr, n2r, n2d) * r;
+            if (Wh && slot_is_top(e, j)) {
+                double rh = Wh[(int64_t)u * B + b];
+                double dh2 = block_sum(rh * v, sh);
+                double n2h = block_sum(rh * rh, sh);
+                if (n2h > 0.0)
+                    ++rows;
+                gv = gv + gate_of(dh2, n2h, n2d) * rh;
+            }
+        }
+        if (rows > 1)
+            v = gv;
+    }
     sh[b] = v > 0.0 ? v : 0.0;
     __syncthreads();
     if (b == d[g + 1])
@@ -325,7 +383,8 @@ static T *up(const std::vector<T> &v)
 // One store on the device: emit, sort, offsets, learn. Returns W.
 static double *store(const Enc &e, const uint8_t *dd, const int64_t *dfs,
                      int32_t nf, const std::vector<int64_t> &sched,
-                     bool top_only, bool meta, double rate)
+                     bool top_only, bool meta, double rate,
+                     std::vector<int64_t> *events)
 {
     int64_t n = sched.size(), K = e.T + 1, E = n * K;
     int64_t *ds = up(sched);
@@ -366,6 +425,14 @@ static double *store(const Enc &e, const uint8_t *dd, const int64_t *dfs,
     learn<<<e.U, B>>>(rowptr, v0, rate, meta ? 1 : 0, W);
     CHECK(hipGetLastError());
     CHECK(hipDeviceSynchronize());
+    if (events) {
+        std::vector<int64_t> rp(e.U + 1);
+        CHECK(hipMemcpy(rp.data(), rowptr, (e.U + 1) * 8,
+                        hipMemcpyDeviceToHost));
+        events->assign(e.U, 0);
+        for (int32_t u = 0; u < e.U; ++u)
+            (*events)[u] = rp[u + 1] - rp[u];
+    }
     for (void *q : {(void *)ds, (void *)k0, (void *)k1, (void *)v0,
                     (void *)v1, (void *)hist, (void *)rowptr})
         CHECK(hipFree(q));
@@ -376,7 +443,8 @@ static double *store(const Enc &e, const uint8_t *dd, const int64_t *dfs,
 static std::vector<double> store(const Enc &e, const std::vector<uint8_t> &d,
                                  const std::vector<int64_t> &fs,
                                  const std::vector<int64_t> &sched,
-                                 bool top_only, bool meta, double rate)
+                                 bool top_only, bool meta, double rate,
+                                 std::vector<int64_t> *events)
 {
     int K = e.T + 1;
     std::vector<std::pair<uint32_t, uint8_t>> ev;
@@ -396,12 +464,16 @@ static std::vector<double> store(const Enc &e, const std::vector<uint8_t> &d,
                          return a.first < b.first;
                      });
     std::vector<double> W((size_t)e.U * B, 0.0);
+    if (events)
+        events->assign(e.U, 0);
     size_t i = 0;
     while (i < ev.size() && ev[i].first < (uint32_t)e.U) {
         uint32_t u = ev[i].first;
         size_t j = i;
         while (j < ev.size() && ev[j].first == u)
             ++j;
+        if (events)
+            (*events)[u] = (int64_t)(j - i);
         for (int b = 0; b < B; ++b) {
             double w = 0.0;
             for (size_t x = i; x < j; ++x) {
@@ -415,6 +487,53 @@ static std::vector<double> store(const Enc &e, const std::vector<uint8_t> &d,
     return W;
 }
 #endif
+
+struct Stored {
+    int32_t flags;
+    std::vector<int64_t> events;
+    std::vector<double> W;
+};
+
+static void write_knowledge(const char *path, int32_t U, double rate,
+                            const std::vector<Stored> &st)
+{
+    FILE *o = std::fopen(path, "wb");
+    if (!o) {
+        std::fprintf(stderr, "FAIL: open %s\n", path);
+        std::exit(1);
+    }
+    int32_t ns = (int32_t)st.size();
+    std::fwrite("LOCUSKN1", 1, 8, o);
+    std::fwrite(&U, 4, 1, o);
+    std::fwrite(&ns, 4, 1, o);
+    std::fwrite(&rate, 8, 1, o);
+    for (const Stored &s : st) {
+        std::vector<int64_t> rp(U + 1, 0);
+        std::vector<uint8_t> bytes;
+        std::vector<double> w;
+        for (int32_t u = 0; u < U; ++u) {
+            for (int b = 0; b < B; ++b) {
+                double x = s.W[(size_t)u * B + b];
+                if (x != 0.0) {
+                    bytes.push_back((uint8_t)b);
+                    w.push_back(x);
+                }
+            }
+            rp[u + 1] = (int64_t)w.size();
+        }
+        std::fwrite(&s.flags, 4, 1, o);
+        std::fwrite(s.events.data(), 8, U, o);
+        std::fwrite(rp.data(), 8, U + 1, o);
+        if (!bytes.empty()) {
+            std::fwrite(bytes.data(), 1, bytes.size(), o);
+            std::fwrite(w.data(), 8, w.size(), o);
+        }
+    }
+    if (std::fclose(o) != 0) {
+        std::fprintf(stderr, "FAIL: write %s\n", path);
+        std::exit(1);
+    }
+}
 
 template <class T>
 static void rd(FILE *f, T *p, size_t n)
@@ -437,8 +556,8 @@ static std::vector<T> rdv(FILE *f)
 
 int main(int argc, char **argv)
 {
-    if (argc != 3) {
-        std::fprintf(stderr, "usage: learn_device IN OUT\n");
+    if (argc != 3 && argc != 4) {
+        std::fprintf(stderr, "usage: learn_device IN OUT [KNOW]\n");
         return 2;
     }
     FILE *f = std::fopen(argv[1], "rb");
@@ -497,7 +616,10 @@ int main(int argc, char **argv)
         nval = 0;
     int64_t P = pos.size();
     bool meta = flags & 1, hippo = flags & 2, cmeta = flags & 4;
+    bool gated = flags & 8;
     std::vector<double> vb(nl, 0.0), tb(nl, 0.0);
+    const char *know = argc == 4 ? argv[3] : nullptr;
+    std::vector<Stored> kept;
 
 #ifdef __HIPCC__
     uint8_t *dtr = up(tr), *dsc = up(sc);
@@ -519,17 +641,29 @@ int main(int argc, char **argv)
         }
         CHECK(hipFree(don));
     } else {
-        Wc = store(e, dtr, dtfs, nft, sched, false,
-                   kind == 0 ? meta : cmeta, rate);
+        bool cm = kind == 0 ? meta : cmeta;
+        std::vector<int64_t> ec, eh;
+        Wc = store(e, dtr, dtfs, nft, sched, false, cm, rate, &ec);
         if (kind == 1 && hippo)
-            Wh = store(e, dtr, dtfs, nft, online, true, true, rate);
+            Wh = store(e, dtr, dtfs, nft, online, true, true, rate, &eh);
+        if (know) {
+            std::vector<double> h((size_t)e.U * B);
+            CHECK(hipMemcpy(h.data(), Wc, h.size() * 8,
+                            hipMemcpyDeviceToHost));
+            kept.push_back({cm ? 1 : 0, ec, h});
+            if (Wh) {
+                CHECK(hipMemcpy(h.data(), Wh, h.size() * 8,
+                                hipMemcpyDeviceToHost));
+                kept.push_back({3, eh, h});
+            }
+        }
     }
     double *dn, *dp, *dl, *dout;
     CHECK(hipMalloc(&dn, std::max<int64_t>(1, P) * 8));
     CHECK(hipMalloc(&dp, std::max<int64_t>(1, P) * 8));
     if (P) {
-        score<<<P, B>>>(e, dsc, dsfs, nfs, dpos, kind, Wc, Wh, cnt, tot, dn,
-                        dp);
+        score<<<P, B>>>(e, dsc, dsfs, nfs, dpos, kind, gated ? 1 : 0, Wc,
+                        Wh, cnt, tot, dn, dp);
         CHECK(hipGetLastError());
     }
     dl = up(lam);
@@ -557,15 +691,73 @@ int main(int argc, char **argv)
             }
         }
     } else {
-        Wc = store(e, tr, tfs, sched, false, kind == 0 ? meta : cmeta, rate);
+        bool cm = kind == 0 ? meta : cmeta;
+        std::vector<int64_t> ec, eh;
+        Wc = store(e, tr, tfs, sched, false, cm, rate, &ec);
         if (kind == 1 && hippo)
-            Wh = store(e, tr, tfs, online, true, true, rate);
+            Wh = store(e, tr, tfs, online, true, true, rate, &eh);
+        if (know) {
+            kept.push_back({cm ? 1 : 0, ec, Wc});
+            if (!Wh.empty())
+                kept.push_back({3, eh, Wh});
+        }
     }
     std::vector<double> dn(P), dp(P);
+    std::vector<std::vector<double>> rows;
+    std::vector<double> dvec(B);
     for (int64_t q = 0; q < P; ++q) {
         int64_t g = pos[q];
         int64_t p = g - sfs[file_of(sfs.data(), nfs, g)];
         double total = 0.0;
+        if (gated && kind != 2) {
+            rows.clear();
+            for (int j = 0; j <= e.T; ++j) {
+                int32_t u = unit_at(e, sc.data(), g, p, j);
+                if (u < 0)
+                    continue;
+                rows.push_back(std::vector<double>(
+                    &Wc[(size_t)u * B], &Wc[(size_t)u * B] + B));
+                if (!Wh.empty() && slot_is_top(e, j))
+                    rows.push_back(std::vector<double>(
+                        &Wh[(size_t)u * B], &Wh[(size_t)u * B] + B));
+            }
+            for (int b = 0; b < B; ++b) {
+                dvec[b] = 0.0;
+                for (const std::vector<double> &r : rows)
+                    dvec[b] += r[b];
+            }
+            double n2d = 0.0;
+            for (int b = 0; b < B; ++b)
+                n2d += dvec[b] * dvec[b];
+            int live = 0;
+            for (const std::vector<double> &r : rows) {
+                double n2r = 0.0;
+                for (int b = 0; b < B; ++b)
+                    n2r += r[b] * r[b];
+                if (n2r > 0.0)
+                    ++live;
+            }
+            std::vector<double> gv(B, 0.0);
+            for (const std::vector<double> &r : rows) {
+                double dr = 0.0, n2r = 0.0;
+                for (int b = 0; b < B; ++b) {
+                    dr += r[b] * dvec[b];
+                    n2r += r[b] * r[b];
+                }
+                double gg = gate_of(dr, n2r, n2d);
+                for (int b = 0; b < B; ++b)
+                    gv[b] += gg * r[b];
+            }
+            for (int b = 0; b < B; ++b) {
+                double x = live > 1 ? gv[b] : dvec[b];
+                x = x > 0.0 ? x : 0.0;
+                if (b == sc[g + 1])
+                    dn[q] = x;
+                total += x;
+            }
+            dp[q] = total;
+            continue;
+        }
         for (int b = 0; b < B; ++b) {
             double dc = 0.0, dh = 0.0;
             for (int j = 0; j <= e.T; ++j) {
@@ -602,6 +794,8 @@ int main(int argc, char **argv)
         vb[l] /= std::max<int64_t>(nval, 1);
         tb[l] /= std::max<int64_t>(nt, 1);
     }
+    if (know && kind != 2)
+        write_knowledge(know, e.U, rate, kept);
     FILE *o = std::fopen(argv[2], "wb");
     if (!o || std::fwrite(vb.data(), 8, nl, o) != (size_t)nl ||
         std::fwrite(tb.data(), 8, nl, o) != (size_t)nl ||

@@ -96,6 +96,19 @@ class NgramEncoder:
                 offset += size
         self.n = offset
 
+    @classmethod
+    def from_tables(cls, orders, heads, tables):
+        """The encoder a saved store was trained with: `tables` as in
+        `self.tables`, so `units_at` reproduces the training units."""
+        enc = cls.__new__(cls)
+        enc.orders = tuple(orders)
+        enc.heads = heads
+        enc.distinct = {}
+        enc.tables = [tuple(t) for t in tables]
+        enc.n = (enc.tables[-1][3] + enc.tables[-1][4] if enc.tables
+                 else BYTE_UNITS)
+        return enc
+
     def units_at(self, data, pos):
         """Active units after reading data[pos]."""
         out = [data[pos]]

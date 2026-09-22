@@ -67,6 +67,11 @@ is not certain it is omitted rather than guessed.
   than a later ranking pass.
 - Hebb, D. O. (1949). *The Organization of Behavior*. Wiley. — the local
   plasticity rule underlying eligibility-trace learning.
+- Dayan, P., Kakade, S. & Montague, P. R. (2000). Learning and selective
+  attention. *Nature Neuroscience*, 3, 1218–1223. — conditioning as
+  tracking with uncertainty (Kalman filter): the step size is the
+  current uncertainty, not a constant; the basis for the `adaptive`
+  outcome mixture.
 
 ## Memory systems, consolidation and reconsolidation
 
@@ -86,6 +91,11 @@ is not certain it is omitted rather than guessed.
 - Frey, U. & Morris, R. G. M. (1997). Synaptic tagging and long-term
   potentiation. *Nature*, 385, 533–536. — a weak trace captured by a
   nearby unrelated strong event; cross-item, non-local promotion.
+- Izhikevich, E. M. (2007). Solving the distal reward problem through
+  linkage of STDP and dopamine signaling. *Cerebral Cortex*, 17,
+  2443–2452. — an eligibility trace set by activity and credited by a
+  modulator that arrives later; the basis for crediting tags only with
+  outcomes at or after them, within a lifetime.
 
 ## Working memory and capacity
 
@@ -102,6 +112,11 @@ is not certain it is omitted rather than guessed.
 
 ## Sparsity and competition
 
+- Desai, N. S., Rutherford, L. C. & Turrigiano, G. G. (1999). Plasticity
+  in the intrinsic excitability of cortical pyramidal neurons. *Nature
+  Neuroscience*, 2, 515–520. — activity deprivation raises intrinsic
+  excitability without synaptic change; the basis for `Field.excit` and
+  `tests/exp_homeostasis.py`.
 - Olshausen, B. A. & Field, D. J. (1996). Emergence of simple-cell
   receptive field properties by learning a sparse code for natural
   images. *Nature*, 381, 607–609. — sparse coding through competition, so
@@ -128,8 +143,17 @@ is not certain it is omitted rather than guessed.
 
 ## Sleep
 
+- Borbély, A. A. (1982). A two process model of sleep regulation.
+  *Human Neurobiology*, 1, 195–204. — sleep pressure (Process S) built
+  during wake and discharged by sleep; the basis for LocusAI entering
+  sleep by itself when pressure reaches a threshold.
+- Roffwarg, H. P., Muzio, J. N. & Dement, W. C. (1966). Ontogenetic
+  development of the human sleep-dream cycle. *Science*, 152, 604–619.
+  — sleep need falling with age; LocusAI's pressure (new events over
+  lifetime events) falls in the same direction as experience grows.
 - Tononi, G. & Cirelli, C. (2003). Sleep and synaptic homeostasis: a
-  hypothesis. *Brain Research Bulletin*, 62, 143–150.
+  hypothesis. *Brain Research Bulletin*, 62, 143–150. — sleep need
+  set by synaptic potentiation accumulated while awake.
 - Tononi, G. & Cirelli, C. (2014). Sleep and the price of plasticity: from
   synaptic and cellular homeostasis to memory consolidation and
   integration. *Neuron*, 81, 12–34. — global downscaling with gist

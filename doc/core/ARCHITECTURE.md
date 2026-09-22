@@ -262,6 +262,22 @@ agreeing on every figure:
   LocusAI 12 s wall, 14 CPU core-seconds, 11.2 s GPU (was 30 s, 454, 6.7);
   `cicd_runner` 7 s, 8, 6.9 (was 16 s, 234, 4.9); 2.3 of 24 cores busy on
   average. `ENGINE=host` keeps the Python-events path as the reference.
+- Knowledge store and prompt reading. `make know` trains a learner
+  (default CLS, metaplastic neocortex) on the GPU and keeps it at `KNOW`:
+  each store's non-zero weights by next byte plus its per-unit event
+  counts (format in `core/gpu/learn_device.cpp`), and a JSON sidecar with
+  the encoder tables, the lam fitted on validation and provenance. A
+  weight never moved stays exactly 0.0, so the LocusAI store is 14.3 MB
+  where two dense fp64 stores would be about 970 MB. `make prompt` reads
+  a prompt with `core/py/locus/knowledge.py`: each byte is predicted,
+  then learned with the training rule, continuing each unit's
+  metaplastic count; nothing is written back to the store. Gate:
+  `make prompt PROMPTARGS=--score` rescores the store's test split with
+  learning off and equals the device's figure (2.217316765416, difference
+  0 over 59,979 predictions). A 171-byte web-app prompt read at 2.709
+  bits per byte against the LocusAI store, least expected at " app: a";
+  reading a prompt twice with learning on lowers its surprise (4.68 to
+  2.03 bits per byte on a 12 KB store).
 - `make stream-learn-gpu` runs the per-input and CLS learners on the
   GPU (`core/gpu/learn_stream.cpp`): each unit's events replay in one
   block, in fp64 and Python's operation order. Built without hipcc, the
@@ -323,6 +339,112 @@ persistent activity or residual presynaptic facilitation (Fuster &
 Alexander; Mongillo, Barak & Tsodyks) — a state held up by ongoing
 energy expenditure, not stored bytes. It has to live where the compute
 does.
+
+## Memory
+
+Memory is part of the brain, not an attachment to it (decided
+2026-09-22). Target: the learned weights are the memory; each row lives
+in registers or LDS, VRAM, host RAM or disk according to use, and disk is
+the permanent tier, with no store format separate from the working
+substrate. Current state: the stream learner's store
+(`core/build/know/`) is its disk tier in its own sparse format; the
+`Field` kernel is not in it.
+
+Reading is learning. `core/py/locus/knowledge.py` predicts each byte of
+a prompt, then learns it with the training rule; the clock advances one
+tick per byte. A changed row is tagged with the tick of its last change
+and held in the transient tier (`KNOW.tags`), which every later reader
+sees on top of the permanent tier. Nothing reaches the permanent tier
+before sleep.
+
+| biology | LocusAI |
+|---|---|
+| tag set by activity (Frey & Morris 1997) | row tagged with the tick of its last change |
+| fast store, usable before sleep (McClelland et al. 1995) | transient tier `KNOW.tags` |
+| delayed modulator credits earlier eligibility (Izhikevich 2007) | outcome event (value, tick): `make outcome VALUE=x`, or the reader's `--outcome` |
+| offline consolidation | sleep: each tag sums the outcomes at or after its tick and within `--lifetime` ticks; a positive sum captures the row into a new generation (previous kept as `KNOW.prev`), anything else lapses |
+| sleep pressure built by learning while awake, discharged by sleep (Borbély 1982; Tononi & Cirelli 2003) | pressure = events learned into the transient tier / events in the permanent tier; a read that would learn first sleeps when pressure reaches `sleep_threshold` (sidecar, default 0.01) |
+| sleep need falls with age (Roffwarg et al. 1966) | the same reading builds less pressure in a store with more lifetime experience |
+
+LocusAI enters sleep by itself; `make sleep` forces one. Reads with
+learning off never trigger sleep.
+
+The permanent tier is not written before sleep, so a lapse leaves it
+byte-identical. The tag lifetime defaults to unlimited (tags live until
+sleep); its value in ticks, and the sleep threshold's, are open.
+
+Measured on a 12 KB store, four processes: a web-app prompt read at
+4.678 bits per byte with no outcome; a new reader saw the transient tier
+(2.027); `make outcome VALUE=1`; `make sleep` captured 536 rows, lapsed
+0; after sleep the prompt read at 2.027 from the permanent tier.
+
+Not implemented: rows move between disk and RAM only, whole-store; the
+VRAM tier and per-row residency are in Kernel-row residency below. No
+internal outcome signal exists; the reader logs +1 by default and the
+external one is `make test` in the web task.
+
+### Which outcome signal, measured
+
+`make modulators` (`core/tests/exp_modulators.py`): from a generation-0
+store trained on the split, each method reads the validation files as
+episodes and sleeps after each; the test files are halved into a probe
+(the external outcome) and a final half no method sees. Bits per byte on
+the final half, minus generation 0, on three splits of the LocusAI
+corpus (default, s1, s2; stores for s1 and s2 from `make know
+KNOWARGS='--salt s'`).
+
+| method | outcome after an episode | default | s1 | s2 |
+|---|---|---|---|---|
+| none | 0 | 0 | 0 | 0 |
+| all | +1 | -0.0179 | -0.0970 | -0.0115 |
+| novelty | surprise above its running mean | -0.0056 | -0.0363 | -0.0106 |
+| familiarity | surprise below its running mean | -0.0169 | -0.0718 | -0.0031 |
+| progress | within-episode surprise drop above its running mean | -0.0181 | -0.0177 | -0.0039 |
+| external | probe improved | -0.0190 | -0.0948 | -0.0054 |
+| mixture | novelty and progress; weights learn from the sign of the external outcome at a fixed rate 0.5 | -0.0053 | -0.0783 | -0.0095 |
+| adaptive | the same cues; recursive least squares on the standardised external outcome, step = weight uncertainty (Dayan, Kakade & Montague 2000) | -0.0062 | -0.0599 | -0.0066 |
+
+`all` is best or within 0.0011 of best on every split. No internal
+signal keeps its rank across splits. The adaptive mixture's weights
+change sign as evidence arrives (s1: progress +1.83 to -0.78; s2: -4.35
+and -5.60 after two informative episodes, an exact fit of two cues to
+two points). Unchecked: whether selection pays where some experience
+harms, as with the web task's `make test` outcome.
+
+### Coincidence-gated readout, measured
+
+`tests/exp_match_gate.py`: each active (store, unit) row r is scaled by
+`sigmoid(signed_sqrt(cos(r, D - r)))`, D the sum of all active rows, so
+a row counts in proportion to its agreement with the others (NMDA-like
+coincidence detection; the gate form of DeepSeek-V4.1's Engram). The
+gate is recomputed at every position; lam is refitted on validation. The
+ungated readout reproduces each store's device figure exactly.
+
+| split | base test | gated test | change | validation change |
+|---|---|---|---|---|
+| default | 2.217317 | 2.201788 | -0.0155 | -0.0121 |
+| s1 | 2.692695 | 2.680804 | -0.0119 | -0.0121 |
+| s2 | 3.367221 | 3.332552 | -0.0347 | -0.0116 |
+
+This is the readout since 2026-09-22: `learn_device.cpp`'s `score`
+kernel gates the drive (flags bit 8), `make know` builds gated stores by
+default and records `"readout": "gated"` in the sidecar, lam is fitted on
+the gated drive, and `core/py/locus/knowledge.py` gates the reader's
+drive to match. `make know KNOWARGS=--plain` keeps the ungated sum, and
+the control (kind 2) is never gated. On the three splits the device
+reproduced the experiment's gated figures exactly -- test 2.201788,
+2.680804, 3.332552 at lam 0.0625, 0.03125, 0.03125 -- and the reader
+reproduced each device figure to 9e-16.
+
+### Intrinsic excitability, measured
+
+`Field.excit` (default zero, update bit-identical) is a per-unit
+excitability entering beside the bias. `tests/exp_homeostasis.py` sets
+it after every settle to `cue strength * (population mean win frequency
+- own frequency)`, frequencies as running means over settle events.
+On the random kernel (n=64, seeds 71-73) it reduced the attractors from
+46/37/59 to 6/2/6 with a largest basin of 59/63/59 of 64 cues -- it
+created capture where the control has none. Not used by any pathway.
 
 ## Kernel-row residency
 
@@ -488,3 +610,10 @@ capacity figure: it depends on inhibition and on the number of
 injections. With `survey_saturating`, the measured repertoire is 15 of
 32, 52 of 64, 126 of 128 and 254 of 256 states, and saturation takes
 about 5.7 cues per repertoire member.
+
+The 48-of-64 capture is a historical measurement, not a current
+property. Re-measured 2026-09-22 (`tests/exp_homeostasis.py`, control):
+the same random kernel (seed 71, n=64, beta 0.3), one cue per state,
+support held 10 steps, gives 46 attractors with a largest basin of 7;
+seeds 72 and 73 give 37/12 and 59/4; every cue settles in an attractor
+that contains it.

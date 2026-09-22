@@ -83,6 +83,7 @@ LSSRC    = gpu/learn_stream.cpp
 LSBIN    = $(BUILD)/learn_stream
 LDSRC    = gpu/learn_device.cpp
 LDBIN    = $(BUILD)/learn_device
+KNOW    ?= $(BUILD)/know/locus
 ENGINE  ?= device
 CORPUS  ?= ..
 # Overridable so the result can be SWEPT rather than taken on trust:
@@ -324,6 +325,67 @@ stream-learn-gpu: hip-header-check ## Branch and CLS learners on the GPU, scored
 	else \
 		echo "stream-learn-gpu: $(HIPCC) not found -- skipped"; \
 	fi
+
+# A knowledge store: the learner (default CLS, metaplastic neocortex)
+# trained on CORPUS's train split on the GPU and kept at KNOW (+ .json).
+# KNOWARGS passes --salt / --learner (see tools/know.py).
+know: hip-header-check ## Train and keep a knowledge store at KNOW
+	@if command -v $(HIPCC) >/dev/null 2>&1; then \
+		mkdir -p $(BUILD) && \
+		$(GPU_ENV) $(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(LDBIN) $(LDSRC) && \
+		$(GPU_ENV) $(PYTHON3) -u tools/know.py $(CORPUS) $(LDBIN) $(KNOW) \
+			$(KNOWARGS); \
+	else \
+		echo "know: $(HIPCC) not found -- skipped"; \
+	fi
+
+# Read a prompt against KNOW: PROMPTARGS='--file F' (or stdin),
+# '--no-learn', or '--score' to rescore the store's test split.
+prompt: ## Read a prompt against the knowledge store at KNOW
+	$(PYTHON3) tools/prompt.py $(KNOW) $(PROMPTARGS)
+
+# Log an outcome (modulator) at the store's current tick: VALUE=+1 / -1.
+outcome: ## Log an outcome VALUE for the transient tier of KNOW
+	$(if $(VALUE),,$(error outcome: VALUE is required))
+	$(PYTHON3) tools/outcome.py $(KNOW) $(VALUE)
+
+# Offline consolidation: capture rewarded tags into KNOW, lapse the rest.
+# SLEEPARGS='--lifetime TICKS' bounds how far back an outcome credits.
+sleep: ## Consolidate the transient tier of KNOW into its permanent tier
+	$(PYTHON3) tools/sleep.py $(KNOW) $(SLEEPARGS)
+
+# Which outcome signal should decide what reading keeps: seven methods,
+# one process each, from the generation-0 store MODKNOW over CORPUS's
+# validation files; stores under build/mod/. Start through `bg`.
+MODKNOW ?= $(BUILD)/know/locus.gen0
+modulators: ## Compare outcome signals for reading (none/all/novelty/.../mixture)
+	$(PYTHON3) -u tests/exp_modulators.py $(MODKNOW) $(CORPUS) $(BUILD)/mod \
+		$(MODARGS)
+
+# A model repository's code, config, tokenizer and tensor index, without
+# its tensors: REPO=org/name, HFARGS='--dry-run' / '--max-mb N'.
+hf-code: ## Fetch a Hugging Face repo without tensor files into build/hf
+	$(if $(REPO),,$(error hf-code: REPO is required))
+	$(PYTHON3) tools/hf_code.py $(REPO) $(BUILD)/hf $(HFARGS)
+
+# The transformers source for every model_type named by a fetched
+# config.json (sparse, blob-less); HFARCHARGS='--ref <tag>' pins a release.
+hf-arch: ## Fetch transformers modeling code for the architectures in build/hf
+	$(PYTHON3) tools/hf_arch.py $(BUILD)/hf $(HFARCHARGS)
+
+# The code that serves each local Ollama model at the version running:
+# Ollama's source at that tag (llama.cpp pin, compat patches, parsers,
+# renderers), llama.cpp at the pinned tag, and each model's anatomy from
+# /api/show. OLLAMAARGS='--api URL' if the server is elsewhere.
+ollama-code: ## Fetch the serving code and anatomy of the local Ollama models
+	$(PYTHON3) tools/ollama_code.py $(BUILD)/ollama $(OLLAMAARGS)
+
+# Reading material: a bounded slice of a Hugging Face dataset into
+# build/data. DATASET=org/name, DATAARGS='--file PATH --max-mb N'; with no
+# --file it lists the repository and stops.
+hf-data: ## Fetch a bounded slice of a Hugging Face dataset into build/data
+	$(if $(DATASET),,$(error hf-data: DATASET is required))
+	$(PYTHON3) tools/hf_data.py $(DATASET) $(BUILD)/data $(DATAARGS)
 
 # Long jobs exceed a tool call, and polling them through the cicd_runner
 # coordinator blocks its single event loop. Start them detached in the

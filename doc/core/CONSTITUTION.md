@@ -122,6 +122,16 @@ Consequences worth stating:
   selectivity — value per admitted item — never throughput. Instrument the
   admitted-to-presented ratio and the reasons for rejection, because a
   uniformly narrow gate is merely slow; the value is in discrimination.
+- Model files are a sensory channel (decided 2026-09-22). A stored model,
+  such as an Ollama GGUF file, is read through an encoder that maps its
+  structure and statistics into LocusAI's own units as input activation.
+  The test: no weight in LocusAI is computed as a function of a weight in
+  the model file. Every connection that results forms through LocusAI's
+  own co-activation and learning rule; an encoder that projects the
+  file's matrices into kernel rows is an import, however much processing
+  precedes it.
+- Reading is learning. What is perceived drives plasticity, and a signed
+  outcome decides whether the change is kept (`ARCHITECTURE.md`, Memory).
 
 A stream can still teach anything within the permitted class space. Exclusion
 bounds which combinations can coexist, not what can be conveyed inside them.

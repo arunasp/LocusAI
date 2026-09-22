@@ -112,6 +112,110 @@ versions, since nothing is released yet.
   Python-events path to 4.4e-16 bits per byte (C++ build, frozen corpus)
   and on every figure of both corpora (GPU build). LocusAI five splits:
   12 s wall and 14 CPU core-seconds, from 30 s and 454.
+- Knowledge store and prompt reading: `make know` keeps a trained learner
+  (`learn_device` KNOW output, sparse; `core/tools/know.py`), `make
+  prompt` reads a prompt against it (`core/py/locus/knowledge.py`,
+  `core/tools/prompt.py`), learning while reading without writing back.
+  `NgramEncoder.from_tables` rebuilds a saved encoder. Rescoring the
+  store's test split equals the device figure exactly. Tests:
+  `core/tests/test_knowledge.py` (7).
+- Reading persists by outcome (synaptic tagging and capture): rows learned
+  while reading are tagged; `Knowledge.consolidate(outcome)` captures them
+  into a new store generation when the outcome is positive (previous kept
+  as `KNOW.prev`) and restores them exactly otherwise. `make prompt`
+  takes `--outcome` (default +1); `--score` on a later generation reports
+  the change since generation 0. `CONSTITUTION.md`: model files are a
+  sensory channel, with the no-weight-from-weight test. `ARCHITECTURE.md`:
+  Memory. 3 tests added (10 in `test_knowledge.py`).
+- Two-tier memory with offline consolidation: rows learned while reading
+  are tagged with the tick of their last change and held in a transient
+  tier (`KNOW.tags`) that later readers see; `make outcome VALUE=x` logs a
+  modulator event; `make sleep` credits each tag with the outcomes at or
+  after it within `--lifetime` ticks and captures positive ones into a
+  new generation. The reader no longer writes the permanent tier.
+  `REFERENCES.md`: Izhikevich 2007. 16 tests in `test_knowledge.py`;
+  crediting earlier outcomes or ignoring the lifetime each fails one.
+- `make modulators` (`core/tests/exp_modulators.py`): seven outcome
+  signals for what reading keeps (none, all, novelty, familiarity,
+  progress, external, a mixture learning from the external outcome), one
+  process each, scored on a test half no method sees. One split: external
+  -0.0190 bits per byte keeping 9/16 episodes, all -0.0179, progress
+  -0.0181, familiarity -0.0169, novelty -0.0056, mixture -0.0053.
+  Recorded in `ARCHITECTURE.md` (Which outcome signal, measured).
+- `core/tools/hf_code.py` (`make hf-code REPO=org/name`): fetches a
+  Hugging Face model repository without its tensors -- skips tensor
+  files by extension and anything over `--max-mb` (default 50), checks
+  each download against the Hub's git blob SHA-1 or LFS SHA-256, and
+  writes `manifest.json` listing kept and skipped files with sizes.
+  Standard library only. `deepseek-ai/DeepSeek-V4.1-Flash`, dry run: keep
+  40 files (15.9 MB, including `inference/model.py`, `kernel.py`,
+  `engram.py`, `config.json`, `model.safetensors.index.json`), skip 48
+  safetensors shards (475.3 GB). 4 tests against a local mock Hub.
+- LocusAI sleeps by itself: sleep pressure is the events learned into the
+  transient tier over the events in the permanent tier; a read that would
+  learn first sleeps when pressure reaches `sleep_threshold` (sidecar,
+  default 0.01). Reads with learning off never sleep. `make prompt`
+  reports pressure and any sleep it took. `REFERENCES.md`: Borbély 1982,
+  Roffwarg, Muzio & Dement 1966. 22 tests in `test_knowledge.py`;
+  sleeping during evaluation, ignoring lifetime experience, or never
+  sleeping each fails one.
+- `make modulators` adds `adaptive`: the same two cues combined by
+  recursive least squares against the standardised external outcome, no
+  learning rate (step = weight uncertainty; Dayan, Kakade & Montague
+  2000). Three splits: keeping everything is best or within 0.0011 of
+  best on each; no internal signal keeps its rank; adaptive is better than
+  the fixed-rate mixture on one split by 0.0009 and worse on two
+  (-0.0062/-0.0599/-0.0066 against -0.0053/-0.0783/-0.0095).
+- From DeepSeek-V4.1-Flash's code and report, through biology.
+  `tests/exp_match_gate.py`: a coincidence-gated readout (each row scaled
+  by `sigmoid(signed_sqrt(cos(row, rest)))`) lowers test bits per byte on
+  all three splits (-0.0155/-0.0119/-0.0347) and validation on all three;
+  the ungated readout reproduces the device figures exactly. Not yet the
+  device readout. `Field.excit` (default zero, bit-identical) with
+  `tests/exp_homeostasis.py`: the tested intrinsic-excitability rule
+  created capture (largest basin 59-63 of 64) where the control has none
+  (largest basin 4-12); the 48-of-64 capture in `ARCHITECTURE.md` is
+  marked historical. `REFERENCES.md`: Desai, Rutherford & Turrigiano 1999.
+- `core/tools/hf_arch.py` (`make hf-arch`): for every `model_type` in a
+  config fetched by `hf_code.py`, sparse-clones only
+  `src/transformers/models/<model_type>/` (blob-less, depth 1), records the
+  commit and found/missing architectures in `manifest.json`. Code coverage
+  of the eight local Ollama models: their Hugging Face sources
+  (Qwen3.8-27B, Qwen3-Coder-30B-A3B-Instruct, Qwen2.5-Coder-7B-Instruct,
+  gemma-4-31B-it, NVIDIA-Nemotron-3-Nano-30B-A3B-BF16, VibeThinker-3B)
+  plus transformers 14793d45af28 for qwen2, qwen3_moe, qwen3_5, gemma4 and
+  nemotron_h (28 files, 738 KB); deepseek_v41 is not in transformers and
+  ships its own code. The Ollama store itself holds no model code.
+  2 tests.
+- `core/tools/ollama_code.py` (`make ollama-code`): the code that serves
+  each local Ollama model at the version running, read from the server's
+  own API (`/api/version`, `/api/tags`, `/api/show`): Ollama's source at
+  that tag (the `LLAMA_CPP_VERSION` pin, `llama/compat/`, all parsers and
+  renderers), llama.cpp at the pinned tag (each model's
+  `src/models/<arch>.cpp` plus the shared arch/model/graph/hparams
+  sources), and each model's anatomy (tensors, GGUF metadata) as JSON.
+  Names resolve by file stem, else through the files that use the quoted
+  name, since the registry maps some names to differently named files.
+  Ollama 0.32.14 / llama.cpp b10434: all eight models resolved. 5 tests.
+- The coincidence-gated readout is now the readout: `learn_device.cpp`'s
+  `score` kernel gates the drive (flags bit 8), `make know` is gated by
+  default (`--plain` for the old sum) and records it in the sidecar, lam
+  is fitted on the gated drive, and the reader gates to match. Rebuilt
+  stores reproduce the experiment's gated figures exactly (2.201788,
+  2.680804, 3.332552) and the reader reproduces each device figure to
+  9e-16. The control is never gated. 2 tests added (24 in
+  `test_knowledge.py`).
+- `core/tools/hf_data.py` (`make hf-data DATASET=org/name`): a bounded
+  slice of a Hugging Face dataset as reading material -- lists the
+  dataset repository, downloads named files into `build/data`, fetches
+  anything over `--max-mb` as a prefix by HTTP range and records it as
+  truncated, verifies whole files against the Hub's LFS SHA-256, and
+  records the licence from the README. First corpus:
+  `roneneldan/TinyStories` `TinyStories-valid.txt`, 19,447,282 bytes,
+  hash verified, licence cdla-sharing-1.0. Measured on its first 2 MB:
+  1,207 distinct 2-grams, 7,902 3-grams, 30,477 4-grams over 90 distinct
+  bytes, so English of this kind needs no encoder capacity cap at this
+  scale. 4 tests against a local mock.
 - `doc/core/ROADMAP.md` standing constraints: biology guides the inputs
   and every result reports its resource cost; experiments run in the
   project's GPU container; work is split across the GPU and all CPU

@@ -283,12 +283,15 @@ def schedule(train, replay):
     return main, online
 
 
-def device_run(binary, enc, train, val, test, kind, opts):
+def device_run(binary, enc, train, val, test, kind, opts, know=None,
+               gated=False):
     """Everything on the device (core/gpu/learn_device.cpp); returns
-    (val bits per lam, test bits per lam, n_val, n_test)."""
+    (val bits per lam, test bits per lam, n_val, n_test). With ``know``
+    the learned stores are also written there (core/tools/know.py)."""
     flags = ((1 if opts.get("metaplastic") else 0)
              | (2 if opts.get("hippo") else 0)
-             | (4 if opts.get("cortex_meta") else 0))
+             | (4 if opts.get("cortex_meta") else 0)
+             | (8 if gated else 0))
     main, online = schedule(train, kind == "cls" and opts.get("replay"))
 
     def blob(files):
@@ -314,7 +317,8 @@ def device_run(binary, enc, train, val, test, kind, opts):
         f.write(struct.pack("<i", len(val) + len(test)) + sfs.tobytes())
         f.write(struct.pack("<i", len(val)))
         f.write(struct.pack("<i", len(LAMS)) + array("d", LAMS).tobytes())
-    r = subprocess.run([binary, inp, out], capture_output=True, text=True)
+    cmd = [binary, inp, out] + ([know] if know else [])
+    r = subprocess.run(cmd, capture_output=True, text=True)
     os.unlink(inp)
     if r.returncode != 0:
         raise SystemExit("FAIL: %s exited %d: %s" % (binary, r.returncode,
