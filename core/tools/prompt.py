@@ -18,7 +18,6 @@ in file order, so the result is deterministic. On the generation the
 device measured, it must equal the device's figure.
 """
 
-import multiprocessing
 import os
 import sys
 import time
@@ -28,6 +27,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "py"))
 sys.path.insert(0, os.path.join(HERE, "..", "tests"))
 
 from locus.encode import repo_files  # noqa: E402
+from locus.execution import map_jobs  # noqa: E402
 from locus.knowledge import Knowledge  # noqa: E402
 
 
@@ -53,13 +53,8 @@ def score(k, procs=None):
              if X.split(p, m["salt"]) == "test"]
     _STORE = k
     procs = max(1, min(len(files), procs or os.cpu_count() or 1))
-    t0, c0 = time.time(), time.process_time()
-    if procs > 1:
-        ctx = multiprocessing.get_context("fork")
-        with ctx.Pool(procs) as pool:
-            parts = pool.map(_score_one, files, chunksize=1)
-    else:
-        parts = [_score_one(d) for d in files]
+    t0 = time.time()
+    parts = map_jobs(_score_one, files, procs)
     bits = n = 0
     for fb, fn in parts:
         bits += fb
