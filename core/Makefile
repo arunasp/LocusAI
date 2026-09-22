@@ -387,6 +387,13 @@ hf-data: ## Fetch a bounded slice of a Hugging Face dataset into build/data
 	$(if $(DATASET),,$(error hf-data: DATASET is required))
 	$(PYTHON3) tools/hf_data.py $(DATASET) $(BUILD)/data $(DATAARGS)
 
+# The field experiments are single-core by nature (Field.step is O(n^2)
+# in Python) but independent of each other, so they run side by side,
+# one process each, logs under build/exps. EXPS=name1 name2 picks a
+# subset. Serial cost measured 2026-09-22: 111 s on one core of 24.
+experiments: ## Run the field experiments concurrently into build/exps
+	$(PYTHON3) tools/run_exps.py $(BUILD)/exps $(EXPS)
+
 # Long jobs exceed a tool call, and polling them through the cicd_runner
 # coordinator blocks its single event loop. Start them detached in the
 # project container with ONE call, then read build/$(JOB).log through the

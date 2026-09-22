@@ -234,6 +234,20 @@ versions, since nothing is released yet.
   English store: 418 s on 1 core (1.4 of 24 busy) to 37.9 s on 24
   (21.0 busy, 87%), same figure 1.858931205891, device difference
   1.1e-15.
+- Sweep of every compute path for the standing constraint (GPU first,
+  then all cores). Already right: learning on the device
+  (`learn_device.cpp`, one process per job), scoring one process per
+  core, and the outcome-signal, gate and homeostasis experiments on
+  pools. Correctly single-core: the reference library (`field.py`,
+  `cycle.py`, `learn.py`, `encode.py`) and the I/O tools. Fixed: the
+  field experiments ran one after another on one core -- measured
+  2026-09-22 at 111 s total (exp_stack 41.5, exp_persistence 25.2,
+  exp_singlepass 15.4, exp_stream 12.3, exp_capacity 11.3, exp_precision
+  5.5). `make experiments` (`core/tools/run_exps.py` on
+  `core/tests/parallel.py`) runs them side by side, one process each,
+  logs under `build/exps`: 44.5 s wall against 129.4 s of CPU, bounded by
+  the longest script. Their own loops are untouched, since their printed
+  output is a measurement record. 4 tests for the helper.
 - `doc/core/ROADMAP.md` standing constraints: biology guides the inputs
   and every result reports its resource cost; experiments run in the
   project's GPU container; work is split across the GPU and all CPU
