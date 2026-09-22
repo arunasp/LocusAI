@@ -216,6 +216,17 @@ versions, since nothing is released yet.
   1,207 distinct 2-grams, 7,902 3-grams, 30,477 4-grams over 90 distinct
   bytes, so English of this kind needs no encoder capacity cap at this
   scale. 4 tests against a local mock.
+- `fit_lam` extends its grid by an octave while the best lam sits on a
+  boundary and is still improving outward, stopping on a plateau (a flat
+  scorer reached 2^-76 before that condition was added); `at_edge` now
+  means only that the extension limit was reached. The device grid widens
+  to 2^-24..2^8, since the device scores every lam in one call.
+  CORRECTION: the TinyStories run that exited 2 (AT GRID EDGE) was NOT
+  reporting grid-bound figures -- with the wider grid the fit is still
+  2^-12 and every figure is unchanged (control 1.967328, CLS with a
+  metaplastic neocortex 1.870847, -0.096 bits per byte). The guard could
+  not distinguish "pinned by the grid" from "best there"; now it can.
+  5 tests in `core/tests/test_fit_lam.py`.
 - `doc/core/ROADMAP.md` standing constraints: biology guides the inputs
   and every result reports its resource cost; experiments run in the
   project's GPU container; work is split across the GPU and all CPU
