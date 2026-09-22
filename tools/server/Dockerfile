@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         g++ \
         libc6-dev \
         util-linux \
+        procps \
         libxml2 \
         libelf1 \
         libnuma1 \
@@ -25,6 +26,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # already standard in a Debian image and its --reset-env re-initialises
 # HOME, SHELL, USER and PATH from the target uid's own passwd entry
 # rather than leaving root's environment behind under another uid.
+#
+# procps: supplies ps, so processes can be inspected from inside this
+# container. Until now the only view was `docker top` from the
+# coordinator, which cannot be reached from a job running here -- and a
+# long job (make bg) has no other way to see what its own children are
+# doing. Added 2026-09-22 after a scoring run's cost was only visible
+# from outside.
 #
 # gcc/libc6-dev: so core/ can be compiled inside this container rather
 # than only outside it -- this is the only container with GPU access,

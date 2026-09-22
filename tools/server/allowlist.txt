@@ -52,6 +52,12 @@ rocminfo
 # actually targets the GPU; gcc above only covers the CPU substrate.
 hipcc
 
+# ps: process inspection from inside this container (procps in the
+# Dockerfile). Read-only. Same caveat as `make` below: this line goes
+# live by mtime with no restart, but the binary only exists after the
+# image is rebuilt.
+ps
+
 # make: added 2026-08-08 so the new root Makefile (lint/build/deploy/
 # verify/e2e/all, wrapping tools/pipeline.sh with standard DevOps
 # target names -- see Makefile itself) is callable through this proxy
