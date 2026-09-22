@@ -2,7 +2,9 @@
 
 Stream: the repository's text files (`locus.encode.repo_files`), split by
 a stable path hash into train, validation and test files. The encoder is
-sized on the training files.
+sized on the training files. The learners and the readout live in
+`locus.learn`; this script holds only the split, the baselines and the
+lam fit.
 
 Per training position t, with context units C = units_at(data, t):
 
@@ -25,7 +27,10 @@ counts with every unit's row scaled to sum 1, the equal weight per source
 that `scale_sources` imposes, with lam fitted on validation. The last
 learner variant must reproduce it exactly (see VARIANTS).
 
-Run: python3 tests/exp_learn_stream.py [ROOT]   (or `make stream-learn`)
+Run: python3 tests/exp_learn_stream.py [ROOT [GROUPS]]
+(or `make stream-learn`). GROUPS is a comma-separated subset of tag,
+faithful, branch and cls; all run when it is omitted. The reference and the
+control always run.
 """
 
 import math
@@ -37,6 +42,9 @@ import zlib
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "py"))
 
 from locus.encode import BYTE_UNITS, NgramEncoder, repo_files  # noqa: E402
+from locus.learn import (BranchLearner, CLSLearner,            # noqa: E402
+                         FaithfulLearner, TagLearner, prob, score,
+                         score_with)
 from locus.plasticity import Plasticity                         # noqa: E402
 
 EVERY = 5
@@ -55,61 +63,41 @@ VARIANTS = (
     ("check: constant, no carry, one rescale, no cap", 1e-5, False, False),
 )
 
+# The biology-faithful learner and its ablation: (label, NE gain,
+# homeostasis). See locus.learn.FaithfulLearner.
+FAITHFUL = (
+    ("faithful: delta, NE gain, homeostasis", True, True),
+    ("faithful without NE gain", False, True),
+    ("faithful without homeostasis", True, False),
+)
 
-def split(path):
-    h = zlib.crc32(path.encode())
+# Per-input errors: (label, metaplastic, NE gain). See
+# locus.learn.BranchLearner. The metaplastic learner's rows are running
+# frequencies, so it must reproduce the control.
+BRANCH = (
+    ("branch, constant rate", False, False),
+    ("check: branch, metaplastic (1/n)", True, False),
+    ("branch, metaplastic, NE gain", True, True),
+)
+
+# Complementary learning systems: (label, hippocampus, replay). See
+# locus.learn.CLSLearner. The last is the cortex alone without replay,
+# which must reproduce "branch, constant rate".
+CLS = (
+    ("cls: hippocampus, cortex, replay", True, True),
+    ("cls without replay", True, False),
+    ("check: cls cortex alone, no replay", False, False),
+)
+
+
+def split(path, salt=""):
+    """train, val or test for ``path``; ``salt`` gives another split."""
+    h = zlib.crc32((salt + path).encode())
     if h % EVERY == 0:
         return "test"
     if (h // EVERY) % EVERY == 0:
         return "val"
     return "train"
-
-
-def drive_of(p, units):
-    drive = {}
-    for u in units:
-        for b in p._out.get(u, ()):
-            if b < BYTE_UNITS:
-                drive[b] = drive.get(b, 0.0) + p.weights[(u, b)]
-    return drive
-
-
-def prob(drive, b, lam):
-    pos = sum(v for v in drive.values() if v > 0.0)
-    return (max(drive.get(b, 0.0), 0.0) + lam / BYTE_UNITS) / (pos + lam)
-
-
-def learn(p, enc, files, modulated=True, per_file=True):
-    bits = 0.0
-    n = 0
-    for data in files:
-        touched = set()
-        for pos in range(len(data) - 1):
-            units = enc.units_at(data, pos)
-            nxt = data[pos + 1]
-            s = -math.log2(prob(drive_of(p, units), nxt, 1.0))
-            bits += s
-            n += 1
-            p.observe_transition([(u, 1.0) for u in units], [(nxt, 1.0)])
-            p.consolidate(s if modulated else 1.0)
-            touched.update(units)
-        if per_file:
-            p.scale_sources(1.0, sources=touched)
-    if not per_file:
-        p.scale_sources(1.0)
-    return bits / max(n, 1)
-
-
-def score(p, enc, files, lam):
-    bits = 0.0
-    n = 0
-    for data in files:
-        for pos in range(len(data) - 1):
-            b = data[pos + 1]
-            drive = drive_of(p, enc.units_at(data, pos))
-            bits -= math.log2(prob(drive, b, lam))
-            n += 1
-    return bits / max(n, 1), n
 
 
 def count_rows(enc, train):
@@ -142,6 +130,36 @@ def score_normalised(counts, enc, files, lam):
             bits -= math.log2(prob(drive, data[pos + 1], lam))
             n += 1
     return bits / max(n, 1)
+
+
+def control_parts(counts, enc, files):
+    """The lam-independent part of the control readout, per position:
+    (drive of the actual byte, clipped at 0; sum of positive drive).
+    Computed once, so a lam fit costs one pass instead of one per lam;
+    `control_bpb` then gives the same figures as `score_normalised`."""
+    dnext, dpos = [], []
+    for data in files:
+        for pos in range(len(data) - 1):
+            drive = {}
+            for u in enc.units_at(data, pos):
+                row = counts.get(u)
+                if row:
+                    t = row[BYTE_UNITS]
+                    for b in range(BYTE_UNITS):
+                        if row[b]:
+                            drive[b] = drive.get(b, 0.0) + row[b] / t
+            dnext.append(max(drive.get(data[pos + 1], 0.0), 0.0))
+            dpos.append(sum(v for v in drive.values() if v > 0.0))
+    return dnext, dpos
+
+
+def control_bpb(parts, lam):
+    """Bits per byte from `control_parts`, as `prob` computes them."""
+    dnext, dpos = parts
+    bits = 0.0
+    for dn, dp in zip(dnext, dpos):
+        bits -= math.log2((dn + lam / BYTE_UNITS) / (dp + lam))
+    return bits / max(len(dnext), 1)
 
 
 def fit_lam(scorer):
@@ -185,11 +203,19 @@ def main():
 
     learned = []
     edge = False
-    for label, decay, modulated, per_file in VARIANTS:
+    known = {"tag", "faithful", "branch", "cls"}
+    groups = set(sys.argv[2].split(",")) if len(sys.argv) > 2 else known
+    unknown = groups - known
+    if unknown:
+        print("INVALID: unknown group(s) %s" % ", ".join(sorted(unknown)))
+        return 2
+    for label, decay, modulated, per_file in (
+            VARIANTS if "tag" in groups else ()):
         t0 = time.time()
         p = Plasticity(trace_decay=decay,
                        w_max=5.0 if per_file else float("inf"))
-        online = learn(p, enc, parts["train"], modulated, per_file)
+        online = TagLearner(p, enc, modulated, per_file).learn(
+            parts["train"])
         val_bpb, lam, e = fit_lam(
             lambda x: score(p, enc, parts["val"], x)[0])
         edge = edge or e
@@ -199,9 +225,54 @@ def main():
               % (label, time.time() - t0, p.live_weights(), online, lam,
                  val_bpb, "  AT GRID EDGE" if e else ""))
 
+    for label, ne_gain, homeostasis in (
+            FAITHFUL if "faithful" in groups else ()):
+        t0 = time.time()
+        p = Plasticity()
+        online = FaithfulLearner(p, enc, ne_gain, homeostasis).learn(
+            parts["train"])
+        val_bpb, lam, e = fit_lam(
+            lambda x: score(p, enc, parts["val"], x)[0])
+        edge = edge or e
+        test_bpb, n = score(p, enc, parts["test"], lam)
+        learned.append((label, test_bpb))
+        print("%-47s %4.0f s  %7d weights  online %.3f  lam %-7g val %.3f%s"
+              % (label, time.time() - t0, p.live_weights(), online, lam,
+                 val_bpb, "  AT GRID EDGE" if e else ""))
+
+    for label, metaplastic, ne_gain in (
+            BRANCH if "branch" in groups else ()):
+        t0 = time.time()
+        p = Plasticity()
+        online = BranchLearner(p, enc, metaplastic, ne_gain).learn(
+            parts["train"])
+        val_bpb, lam, e = fit_lam(
+            lambda x: score(p, enc, parts["val"], x)[0])
+        edge = edge or e
+        test_bpb, n = score(p, enc, parts["test"], lam)
+        learned.append((label, test_bpb))
+        print("%-47s %4.0f s  %7d weights  online %.3f  lam %-7g val %.3f%s"
+              % (label, time.time() - t0, p.live_weights(), online, lam,
+                 val_bpb, "  AT GRID EDGE" if e else ""))
+
+    for label, hippocampus, replay in (CLS if "cls" in groups else ()):
+        t0 = time.time()
+        cls = CLSLearner(Plasticity(), Plasticity(), enc, replay=replay,
+                         hippocampus=hippocampus)
+        online = cls.learn(parts["train"])
+        val_bpb, lam, e = fit_lam(
+            lambda x: score_with(cls.drive, enc, parts["val"], x)[0])
+        edge = edge or e
+        test_bpb, n = score_with(cls.drive, enc, parts["test"], lam)
+        learned.append((label, test_bpb))
+        weights = cls.hippo.live_weights() + cls.cortex.live_weights()
+        print("%-47s %4.0f s  %7d weights  online %.3f  lam %-7g val %.3f%s"
+              % (label, time.time() - t0, weights, online, lam, val_bpb,
+                 "  AT GRID EDGE" if e else ""))
+
     counts = count_rows(enc, parts["train"])
-    cval, clam, cedge = fit_lam(
-        lambda x: score_normalised(counts, enc, parts["val"], x))
+    cparts = control_parts(counts, enc, parts["val"])
+    cval, clam, cedge = fit_lam(lambda x: control_bpb(cparts, x))
     print("control lam fitted on validation: %g (val %.3f)%s" % (
         clam, cval, "  AT GRID EDGE -- widen the grid" if cedge else ""))
 

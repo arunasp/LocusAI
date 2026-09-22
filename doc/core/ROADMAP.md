@@ -95,7 +95,13 @@ per-source scaling. On this repository's text the rule learns next-byte
 structure and reproduces normalised counts exactly when its surprise
 modulator, trace carry-over and per-file rescaling are removed; with
 one or more of them it scores 0.53–1.20 bits per byte worse (`ARCHITECTURE.md`,
-Learning a byte stream). Structural plasticity and the sleep phase are
+Learning a byte stream). A biology-faithful form (local delta rule,
+noradrenergic gain, tag capture, soft bounds, per-target homeostasis)
+exists and scores 1.57–2.01 bits per byte worse than normalised counts.
+A per-input form (a separate error per input, a metaplastic rate of 1/n,
+no soft bounds or homeostasis) equals normalised counts exactly; which of
+those three differences accounts for the gap is not separated. Structural
+plasticity and the sleep phase are
 open.
 
 Open question, unresolved: whether episodic and procedural replay share
@@ -137,3 +143,10 @@ These apply to every item above and are not milestones.
   process, never by the layer it constrains.
 - A hard resource budget as a constraint the system must satisfy to
   produce output at all, rather than a soft penalty added afterwards.
+- Biology and nature guide the inputs to every solution. The target is
+  how a real brain performs and how little energy it spends doing so:
+  every result reports its resource cost (time, and energy where it can
+  be read) next to its accuracy.
+- Experiments run in the project's own GPU container, not in CI workers.
+- Work is split across the GPU and every CPU core. A single CPU-bound
+  process is not an acceptable default for any component.

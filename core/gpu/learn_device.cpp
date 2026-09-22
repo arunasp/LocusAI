@@ -1,0 +1,614 @@
+// A whole stream learner on the device: encode, emit events, sort them by
+// unit, learn, score and fit lam. The host sends raw bytes, file bounds,
+// the encoder's tables, a schedule of training positions and a lam grid.
+//
+// Mirrors core/py/locus/encode.py (FNV-1a units) and core/py/locus/learn.py
+// (per-input delta rule; metaplastic rate 1/n from an event's rank in its
+// unit). The control (kind 2) mirrors exp_learn_stream.control_parts:
+// count rows, each divided by its unit's total, summed per byte. Builds as
+// HIP, or without hipcc as plain C++ with std::stable_sort in place of the
+// device radix sort.
+//
+// Usage: learn_device IN OUT
+//   IN  int32 U, int32 T, double rate, int32 kind (0 branch, 1 cls,
+//       2 control), int32 flags (1 metaplastic, 2 hippocampus,
+//       4 cortex metaplastic), int32 top;
+//       per table: int32 k, uint32 seed, int32 offset, int32 size;
+//       train: int64 nbytes, bytes, int32 nfiles, int64 start[nfiles+1];
+//       int64 nsched, int64 sched[nsched] (main-store positions in order);
+//       int64 nonline, int64 online[nonline] (hippocampus positions);
+//       scored: int64 nbytes, bytes, int32 nfiles, int64 start[nfiles+1],
+//       int32 nval_files; int32 nlam, double lam[nlam]
+//   OUT double val[nlam], double test[nlam], int64 nval, int64 ntest
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <numeric>
+#include <vector>
+
+#ifdef __HIPCC__
+#include <hip/hip_runtime.h>
+#define CHECK(x)                                                          \
+    do {                                                                  \
+        hipError_t e_ = (x);                                              \
+        if (e_ != hipSuccess) {                                           \
+            std::fprintf(stderr, "FAIL: %s: %s\n", #x,                    \
+                         hipGetErrorString(e_));                          \
+            std::exit(1);                                                 \
+        }                                                                 \
+    } while (0)
+#define HD __host__ __device__
+#else
+#define HD
+#endif
+
+static const int B = 256;
+static const int MAXT = 8;
+
+struct Table {
+    int32_t k;
+    uint32_t seed;
+    int32_t off, size;
+};
+
+struct Enc {
+    int32_t U, T, top;
+    Table t[MAXT];
+};
+
+HD inline int64_t file_of(const int64_t *start, int32_t nf, int64_t g)
+{
+    int32_t lo = 0, hi = nf - 1;
+    while (lo < hi) {
+        int32_t mid = (lo + hi + 1) / 2;
+        if (start[mid] <= g)
+            lo = mid;
+        else
+            hi = mid - 1;
+    }
+    return lo;
+}
+
+// Unit of slot j (0 = the byte, j >= 1 = table j - 1) at global position
+// g, whose offset within its file is p; -1 when the n-gram does not fit.
+HD inline int32_t unit_at(const Enc &e, const uint8_t *d, int64_t g,
+                          int64_t p, int j)
+{
+    if (j == 0)
+        return d[g];
+    const Table &t = e.t[j - 1];
+    if (p < t.k - 1)
+        return -1;
+    uint32_t h = 2166136261u ^ t.seed;
+    for (int i = 0; i < t.k; ++i) {
+        h ^= d[g - t.k + 1 + i];
+        h *= 16777619u;
+    }
+    return t.off + (int32_t)(h % (uint32_t)t.size);
+}
+
+HD inline bool slot_is_top(const Enc &e, int j)
+{
+    return j > 0 && e.t[j - 1].k == e.top;
+}
+
+HD inline double step(double w, int b, int nxt, double rate, double loc,
+                      bool use_loc)
+{
+    double err = (b == nxt ? 1.0 : 0.0) - w;
+    if (err == 0.0)
+        return w;
+    double dw = rate * err;
+    dw = dw * 1.0;
+    if (use_loc)
+        dw = dw * loc;
+    if (dw == 0.0)
+        return w;
+    w = w + dw;
+    if (w > 5.0)
+        w = 5.0;
+    else if (w < -5.0)
+        w = -5.0;
+    return w;
+}
+
+#ifdef __HIPCC__
+// ---------------------------------------------------------------- device --
+__global__ void emit(Enc e, const uint8_t *d, const int64_t *fs, int32_t nf,
+                     const int64_t *sched, int64_t n, int top_only,
+                     uint32_t *key, uint8_t *val)
+{
+    int64_t s = blockIdx.x * (int64_t)blockDim.x + threadIdx.x;
+    if (s >= n)
+        return;
+    int64_t g = sched[s];
+    int64_t p = g - fs[file_of(fs, nf, g)];
+    int K = e.T + 1;
+    for (int j = 0; j < K; ++j) {
+        int32_t u = (top_only && !slot_is_top(e, j)) ? -1
+                                                     : unit_at(e, d, g, p, j);
+        key[s * K + j] = u < 0 ? (uint32_t)e.U : (uint32_t)u;
+        val[s * K + j] = d[g + 1];
+    }
+}
+
+static const int C = 256;
+
+__global__ void rs_count(const uint32_t *key, int64_t n, int shift,
+                         int64_t *hist, int64_t nt)
+{
+    int64_t t = blockIdx.x * (int64_t)blockDim.x + threadIdx.x;
+    if (t >= nt)
+        return;
+    int64_t c[256];
+    for (int d = 0; d < 256; ++d)
+        c[d] = 0;
+    int64_t lo = t * C, hi = lo + C < n ? lo + C : n;
+    for (int64_t i = lo; i < hi; ++i)
+        ++c[(key[i] >> shift) & 255];
+    for (int d = 0; d < 256; ++d)
+        hist[d * nt + t] = c[d];
+}
+
+__global__ void rs_scatter(const uint32_t *kin, const uint8_t *vin,
+                           uint32_t *kout, uint8_t *vout, int64_t n,
+                           int shift, const int64_t *off, int64_t nt)
+{
+    int64_t t = blockIdx.x * (int64_t)blockDim.x + threadIdx.x;
+    if (t >= nt)
+        return;
+    int64_t o[256];
+    for (int d = 0; d < 256; ++d)
+        o[d] = off[d * nt + t];
+    int64_t lo = t * C, hi = lo + C < n ? lo + C : n;
+    for (int64_t i = lo; i < hi; ++i) {
+        int d = (kin[i] >> shift) & 255;
+        kout[o[d]] = kin[i];
+        vout[o[d]] = vin[i];
+        ++o[d];
+    }
+}
+
+__global__ void scan_blk(int64_t *a, int64_t m, int64_t *sums)
+{
+    __shared__ int64_t s[1024];
+    int tid = threadIdx.x;
+    int64_t i = blockIdx.x * (int64_t)1024 + tid;
+    int64_t v = i < m ? a[i] : 0;
+    s[tid] = v;
+    __syncthreads();
+    for (int off = 1; off < 1024; off <<= 1) {
+        int64_t x = tid >= off ? s[tid - off] : 0;
+        __syncthreads();
+        s[tid] += x;
+        __syncthreads();
+    }
+    if (i < m)
+        a[i] = s[tid] - v;
+    if (tid == 1023)
+        sums[blockIdx.x] = s[1023];
+}
+
+__global__ void add_blk(int64_t *a, int64_t m, const int64_t *sums)
+{
+    int64_t i = blockIdx.x * (int64_t)1024 + threadIdx.x;
+    if (i < m)
+        a[i] += sums[blockIdx.x];
+}
+
+static void scan(int64_t *a, int64_t m)
+{
+    int64_t nb = (m + 1023) / 1024;
+    int64_t *sums;
+    CHECK(hipMalloc(&sums, nb * sizeof(int64_t)));
+    scan_blk<<<nb, 1024>>>(a, m, sums);
+    CHECK(hipGetLastError());
+    if (nb > 1) {
+        scan(sums, nb);
+        add_blk<<<nb, 1024>>>(a, m, sums);
+        CHECK(hipGetLastError());
+    }
+    CHECK(hipFree(sums));
+}
+
+__global__ void unit_hist(const uint32_t *key, int64_t n, int64_t *cnt)
+{
+    int64_t i = blockIdx.x * (int64_t)blockDim.x + threadIdx.x;
+    if (i < n)
+        atomicAdd((unsigned long long *)&cnt[key[i]], 1ULL);
+}
+
+__global__ void learn(const int64_t *rowptr, const uint8_t *nxt, double rate,
+                      int meta, double *W)
+{
+    int u = blockIdx.x, b = threadIdx.x;
+    double w = 0.0;
+    int64_t r0 = rowptr[u];
+    for (int64_t e = r0; e < rowptr[u + 1]; ++e) {
+        double loc = meta ? 1.0 / (rate * (double)(e - r0 + 1)) : 1.0;
+        w = step(w, b, nxt[e], rate, loc, meta != 0);
+    }
+    W[(int64_t)u * B + b] = w;
+}
+
+__global__ void count_rows(Enc e, const uint8_t *d, const int64_t *fs,
+                           int32_t nf, const int64_t *sched, int64_t n,
+                           unsigned int *cnt, unsigned long long *tot)
+{
+    int64_t s = blockIdx.x * (int64_t)blockDim.x + threadIdx.x;
+    if (s >= n)
+        return;
+    int64_t g = sched[s];
+    int64_t p = g - fs[file_of(fs, nf, g)];
+    for (int j = 0; j <= e.T; ++j) {
+        int32_t u = unit_at(e, d, g, p, j);
+        if (u < 0)
+            continue;
+        atomicAdd(&cnt[(int64_t)u * B + d[g + 1]], 1u);
+        atomicAdd(&tot[u], 1ULL);
+    }
+}
+
+__global__ void score(Enc e, const uint8_t *d, const int64_t *fs, int32_t nf,
+                      const int64_t *pos, int kind, const double *Wc,
+                      const double *Wh, const unsigned int *cnt,
+                      const unsigned long long *tot, double *dnext,
+                      double *dpos)
+{
+    __shared__ double sh[B];
+    int64_t q = blockIdx.x;
+    int b = threadIdx.x;
+    int64_t g = pos[q];
+    int64_t p = g - fs[file_of(fs, nf, g)];
+    double dc = 0.0, dh = 0.0;
+    for (int j = 0; j <= e.T; ++j) {
+        int32_t u = unit_at(e, d, g, p, j);
+        if (u < 0)
+            continue;
+        if (kind == 2) {
+            unsigned long long t = tot[u];
+            unsigned int c = cnt[(int64_t)u * B + b];
+            if (t && c)
+                dc = dc + (double)c / (double)t;
+        } else {
+            dc = dc + Wc[(int64_t)u * B + b];
+            if (Wh && slot_is_top(e, j))
+                dh = dh + Wh[(int64_t)u * B + b];
+        }
+    }
+    double v = Wh ? dc + dh : dc;
+    sh[b] = v > 0.0 ? v : 0.0;
+    __syncthreads();
+    if (b == d[g + 1])
+        dnext[q] = sh[b];
+    for (int s = B / 2; s > 0; s >>= 1) {
+        if (b < s)
+            sh[b] += sh[b + s];
+        __syncthreads();
+    }
+    if (b == 0)
+        dpos[q] = sh[0];
+}
+
+__global__ void lam_bits(const double *dnext, const double *dpos,
+                         int64_t lo, int64_t hi, const double *lam,
+                         double *out)
+{
+    __shared__ double sh[1024];
+    double l = lam[blockIdx.x], acc = 0.0;
+    for (int64_t i = lo + threadIdx.x; i < hi; i += 1024)
+        acc -= log2((dnext[i] + l / 256.0) / (dpos[i] + l));
+    sh[threadIdx.x] = acc;
+    __syncthreads();
+    for (int s = 512; s > 0; s >>= 1) {
+        if ((int)threadIdx.x < s)
+            sh[threadIdx.x] += sh[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0)
+        out[blockIdx.x] = sh[0];
+}
+
+template <class T>
+static T *up(const std::vector<T> &v)
+{
+    T *p;
+    CHECK(hipMalloc(&p, std::max<size_t>(1, v.size()) * sizeof(T)));
+    if (!v.empty())
+        CHECK(hipMemcpy(p, v.data(), v.size() * sizeof(T),
+                        hipMemcpyHostToDevice));
+    return p;
+}
+
+// One store on the device: emit, sort, offsets, learn. Returns W.
+static double *store(const Enc &e, const uint8_t *dd, const int64_t *dfs,
+                     int32_t nf, const std::vector<int64_t> &sched,
+                     bool top_only, bool meta, double rate)
+{
+    int64_t n = sched.size(), K = e.T + 1, E = n * K;
+    int64_t *ds = up(sched);
+    uint32_t *k0, *k1;
+    uint8_t *v0, *v1;
+    CHECK(hipMalloc(&k0, (E + 1) * 4));
+    CHECK(hipMalloc(&k1, (E + 1) * 4));
+    CHECK(hipMalloc(&v0, E + 1));
+    CHECK(hipMalloc(&v1, E + 1));
+    if (n) {
+        emit<<<(n + 255) / 256, 256>>>(e, dd, dfs, nf, ds, n, top_only, k0,
+                                        v0);
+        CHECK(hipGetLastError());
+    }
+    int64_t nt = (E + C - 1) / C;
+    int64_t *hist;
+    CHECK(hipMalloc(&hist, std::max<int64_t>(1, 256 * nt) * 8));
+    for (int shift = 0; shift < 24 && E; shift += 8) {
+        rs_count<<<(nt + 255) / 256, 256>>>(k0, E, shift, hist, nt);
+        CHECK(hipGetLastError());
+        scan(hist, 256 * nt);
+        rs_scatter<<<(nt + 255) / 256, 256>>>(k0, v0, k1, v1, E, shift, hist,
+                                               nt);
+        CHECK(hipGetLastError());
+        std::swap(k0, k1);
+        std::swap(v0, v1);
+    }
+    int64_t *rowptr;
+    CHECK(hipMalloc(&rowptr, (e.U + 2) * 8));
+    CHECK(hipMemset(rowptr, 0, (e.U + 2) * 8));
+    if (E) {
+        unit_hist<<<(E + 255) / 256, 256>>>(k0, E, rowptr);
+        CHECK(hipGetLastError());
+    }
+    scan(rowptr, e.U + 2);
+    double *W;
+    CHECK(hipMalloc(&W, (size_t)e.U * B * sizeof(double)));
+    learn<<<e.U, B>>>(rowptr, v0, rate, meta ? 1 : 0, W);
+    CHECK(hipGetLastError());
+    CHECK(hipDeviceSynchronize());
+    for (void *q : {(void *)ds, (void *)k0, (void *)k1, (void *)v0,
+                    (void *)v1, (void *)hist, (void *)rowptr})
+        CHECK(hipFree(q));
+    return W;
+}
+#else
+// ------------------------------------------------------------------ host --
+static std::vector<double> store(const Enc &e, const std::vector<uint8_t> &d,
+                                 const std::vector<int64_t> &fs,
+                                 const std::vector<int64_t> &sched,
+                                 bool top_only, bool meta, double rate)
+{
+    int K = e.T + 1;
+    std::vector<std::pair<uint32_t, uint8_t>> ev;
+    ev.reserve(sched.size() * K);
+    for (int64_t g : sched) {
+        int64_t p = g - fs[file_of(fs.data(), (int32_t)fs.size() - 1, g)];
+        for (int j = 0; j < K; ++j) {
+            int32_t u = (top_only && !slot_is_top(e, j))
+                            ? -1
+                            : unit_at(e, d.data(), g, p, j);
+            ev.push_back({u < 0 ? (uint32_t)e.U : (uint32_t)u, d[g + 1]});
+        }
+    }
+    std::stable_sort(ev.begin(), ev.end(),
+                     [](const std::pair<uint32_t, uint8_t> &a,
+                        const std::pair<uint32_t, uint8_t> &b) {
+                         return a.first < b.first;
+                     });
+    std::vector<double> W((size_t)e.U * B, 0.0);
+    size_t i = 0;
+    while (i < ev.size() && ev[i].first < (uint32_t)e.U) {
+        uint32_t u = ev[i].first;
+        size_t j = i;
+        while (j < ev.size() && ev[j].first == u)
+            ++j;
+        for (int b = 0; b < B; ++b) {
+            double w = 0.0;
+            for (size_t x = i; x < j; ++x) {
+                double loc = meta ? 1.0 / (rate * (double)(x - i + 1)) : 1.0;
+                w = step(w, b, ev[x].second, rate, loc, meta);
+            }
+            W[(size_t)u * B + b] = w;
+        }
+        i = j;
+    }
+    return W;
+}
+#endif
+
+template <class T>
+static void rd(FILE *f, T *p, size_t n)
+{
+    if (n && std::fread(p, sizeof(T), n, f) != n) {
+        std::fprintf(stderr, "FAIL: short read\n");
+        std::exit(1);
+    }
+}
+
+template <class T>
+static std::vector<T> rdv(FILE *f)
+{
+    int64_t n;
+    rd(f, &n, 1);
+    std::vector<T> v(n);
+    rd(f, v.data(), n);
+    return v;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc != 3) {
+        std::fprintf(stderr, "usage: learn_device IN OUT\n");
+        return 2;
+    }
+    FILE *f = std::fopen(argv[1], "rb");
+    if (!f) {
+        std::fprintf(stderr, "FAIL: open %s\n", argv[1]);
+        return 1;
+    }
+    Enc e;
+    double rate;
+    int32_t kind, flags;
+    rd(f, &e.U, 1);
+    rd(f, &e.T, 1);
+    rd(f, &rate, 1);
+    rd(f, &kind, 1);
+    rd(f, &flags, 1);
+    rd(f, &e.top, 1);
+    if (e.T > MAXT || e.U >= (1 << 24)) {
+        std::fprintf(stderr, "FAIL: T=%d U=%d out of range\n", e.T, e.U);
+        return 1;
+    }
+    for (int i = 0; i < e.T; ++i) {
+        rd(f, &e.t[i].k, 1);
+        rd(f, &e.t[i].seed, 1);
+        rd(f, &e.t[i].off, 1);
+        rd(f, &e.t[i].size, 1);
+    }
+    std::vector<uint8_t> tr = rdv<uint8_t>(f);
+    int32_t nft;
+    rd(f, &nft, 1);
+    std::vector<int64_t> tfs(nft + 1);
+    rd(f, tfs.data(), nft + 1);
+    std::vector<int64_t> sched = rdv<int64_t>(f);
+    std::vector<int64_t> online = rdv<int64_t>(f);
+    std::vector<uint8_t> sc = rdv<uint8_t>(f);
+    int32_t nfs, nvf;
+    rd(f, &nfs, 1);
+    std::vector<int64_t> sfs(nfs + 1);
+    rd(f, sfs.data(), nfs + 1);
+    rd(f, &nvf, 1);
+    int32_t nl;
+    rd(f, &nl, 1);
+    std::vector<double> lam(nl);
+    rd(f, lam.data(), nl);
+    std::fclose(f);
+
+    // Scored positions: every byte with a next byte in its file, val first.
+    std::vector<int64_t> pos;
+    int64_t nval = 0;
+    for (int i = 0; i < nfs; ++i) {
+        for (int64_t g = sfs[i]; g + 1 < sfs[i + 1]; ++g)
+            pos.push_back(g);
+        if (i + 1 == nvf)
+            nval = pos.size();
+    }
+    if (nvf == 0)
+        nval = 0;
+    int64_t P = pos.size();
+    bool meta = flags & 1, hippo = flags & 2, cmeta = flags & 4;
+    std::vector<double> vb(nl, 0.0), tb(nl, 0.0);
+
+#ifdef __HIPCC__
+    uint8_t *dtr = up(tr), *dsc = up(sc);
+    int64_t *dtfs = up(tfs), *dsfs = up(sfs), *dpos = up(pos);
+    double *Wc = nullptr, *Wh = nullptr;
+    unsigned int *cnt = nullptr;
+    unsigned long long *tot = nullptr;
+    if (kind == 2) {
+        int64_t *don = up(online);
+        CHECK(hipMalloc(&cnt, (size_t)e.U * B * 4));
+        CHECK(hipMalloc(&tot, (size_t)e.U * 8));
+        CHECK(hipMemset(cnt, 0, (size_t)e.U * B * 4));
+        CHECK(hipMemset(tot, 0, (size_t)e.U * 8));
+        int64_t n = online.size();
+        if (n) {
+            count_rows<<<(n + 255) / 256, 256>>>(e, dtr, dtfs, nft, don, n,
+                                                 cnt, tot);
+            CHECK(hipGetLastError());
+        }
+        CHECK(hipFree(don));
+    } else {
+        Wc = store(e, dtr, dtfs, nft, sched, false,
+                   kind == 0 ? meta : cmeta, rate);
+        if (kind == 1 && hippo)
+            Wh = store(e, dtr, dtfs, nft, online, true, true, rate);
+    }
+    double *dn, *dp, *dl, *dout;
+    CHECK(hipMalloc(&dn, std::max<int64_t>(1, P) * 8));
+    CHECK(hipMalloc(&dp, std::max<int64_t>(1, P) * 8));
+    if (P) {
+        score<<<P, B>>>(e, dsc, dsfs, nfs, dpos, kind, Wc, Wh, cnt, tot, dn,
+                        dp);
+        CHECK(hipGetLastError());
+    }
+    dl = up(lam);
+    CHECK(hipMalloc(&dout, nl * 8));
+    lam_bits<<<nl, 1024>>>(dn, dp, 0, nval, dl, dout);
+    CHECK(hipMemcpy(vb.data(), dout, nl * 8, hipMemcpyDeviceToHost));
+    lam_bits<<<nl, 1024>>>(dn, dp, nval, P, dl, dout);
+    CHECK(hipMemcpy(tb.data(), dout, nl * 8, hipMemcpyDeviceToHost));
+    CHECK(hipDeviceSynchronize());
+#else
+    std::vector<double> Wc, Wh;
+    std::vector<unsigned int> cnt;
+    std::vector<unsigned long long> tot;
+    if (kind == 2) {
+        cnt.assign((size_t)e.U * B, 0);
+        tot.assign(e.U, 0);
+        for (int64_t g : online) {
+            int64_t p = g - tfs[file_of(tfs.data(), nft, g)];
+            for (int j = 0; j <= e.T; ++j) {
+                int32_t u = unit_at(e, tr.data(), g, p, j);
+                if (u < 0)
+                    continue;
+                ++cnt[(size_t)u * B + tr[g + 1]];
+                ++tot[u];
+            }
+        }
+    } else {
+        Wc = store(e, tr, tfs, sched, false, kind == 0 ? meta : cmeta, rate);
+        if (kind == 1 && hippo)
+            Wh = store(e, tr, tfs, online, true, true, rate);
+    }
+    std::vector<double> dn(P), dp(P);
+    for (int64_t q = 0; q < P; ++q) {
+        int64_t g = pos[q];
+        int64_t p = g - sfs[file_of(sfs.data(), nfs, g)];
+        double total = 0.0;
+        for (int b = 0; b < B; ++b) {
+            double dc = 0.0, dh = 0.0;
+            for (int j = 0; j <= e.T; ++j) {
+                int32_t u = unit_at(e, sc.data(), g, p, j);
+                if (u < 0)
+                    continue;
+                if (kind == 2) {
+                    unsigned long long t = tot[u];
+                    unsigned int c = cnt[(size_t)u * B + b];
+                    if (t && c)
+                        dc = dc + (double)c / (double)t;
+                } else {
+                    dc = dc + Wc[(size_t)u * B + b];
+                    if (!Wh.empty() && slot_is_top(e, j))
+                        dh = dh + Wh[(size_t)u * B + b];
+                }
+            }
+            double v = !Wh.empty() ? dc + dh : dc;
+            v = v > 0.0 ? v : 0.0;
+            if (b == sc[g + 1])
+                dn[q] = v;
+            total += v;
+        }
+        dp[q] = total;
+    }
+    for (int l = 0; l < nl; ++l)
+        for (int64_t q = 0; q < P; ++q) {
+            double x = -std::log2((dn[q] + lam[l] / 256.0) / (dp[q] + lam[l]));
+            (q < nval ? vb[l] : tb[l]) += x;
+        }
+#endif
+    int64_t nt = P - nval;
+    for (int l = 0; l < nl; ++l) {
+        vb[l] /= std::max<int64_t>(nval, 1);
+        tb[l] /= std::max<int64_t>(nt, 1);
+    }
+    FILE *o = std::fopen(argv[2], "wb");
+    if (!o || std::fwrite(vb.data(), 8, nl, o) != (size_t)nl ||
+        std::fwrite(tb.data(), 8, nl, o) != (size_t)nl ||
+        std::fwrite(&nval, 8, 1, o) != 1 || std::fwrite(&nt, 8, 1, o) != 1) {
+        std::fprintf(stderr, "FAIL: write %s\n", argv[2]);
+        return 1;
+    }
+    std::fclose(o);
+    return 0;
+}

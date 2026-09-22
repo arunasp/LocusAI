@@ -33,6 +33,89 @@ versions, since nothing is released yet.
   cap scores 2.276, equal to the control on validation and test. Costs:
   surprise 0.39–0.44, carry-over 0.23–0.28, per-file rescaling with the
   cap 0.53 bits. Recorded in `doc/core/ARCHITECTURE.md`.
+- Biology-faithful plasticity beside the existing rule:
+  `Plasticity.observe_error` (signed tags from a local prediction error),
+  `consolidate(consume=, bound=)` (tag capture, soft bounds) and
+  `Plasticity.scale_targets` (per-target multiplicative scaling). Nine
+  tests in `core/tests/test_plasticity_faithful.py`; defaults and the
+  original plasticity tests unchanged. `exp_learn_stream.py` gains
+  `learn_faithful` and a `faithful` argument. Held-out test, bits per
+  byte: control 2.271; faithful 4.281, without NE gain 3.975, without
+  homeostasis 3.839. Cause of the gap not established.
+- `core/py/locus/learn.py`: the stream learners (`TagLearner`,
+  `FaithfulLearner`) and readout moved out of `exp_learn_stream.py`,
+  verified identical on a frozen corpus (26 of 26 output lines). New
+  `BranchLearner`: a separate error per input unit, with a constant rate
+  or a metaplastic rate 1/n through `consolidate(local=)`. On this repo,
+  test bits per byte: control 2.273, metaplastic 2.273 (exact, validation
+  too), with NE gain 2.480, constant rate 3.084. `exp_learn_stream.py`
+  takes learner groups (`tag`, `faithful`, `branch`). Ten tests.
+- Delivery pipelines. Root Makefile: `digests`, `commit-verified`
+  (pipeline, then stage exactly FILES, then commit) and `squash-for-push`
+  (backup branch first, refuses on a dirty tree, restores HEAD on
+  failure), from `cicd/gitops.py`; `make gitops-verify` checks 23
+  scenarios against throwaway repos, and removing the restore fails 2.
+  `core/Makefile`: `bg` runs a long job with all output in
+  `build/JOB.log` ending in `exit=N`, so it is started with one call and
+  polled through the Filesystem connector instead of the cicd_runner
+  coordinator, whose single event loop long polls block.
+- `CLSLearner` (complementary learning systems): hippocampal store over
+  the highest-order n-gram units at the metaplastic rate, neocortex over
+  every unit at a constant rate, replay at each file end interleaving new
+  and earlier episodes; readout sums both. Held-out test on this repo
+  (59,979 predictions): control 2.270, CLS 2.491, without replay 2.715,
+  neocortex alone 3.095 (equal to the constant-rate per-input learner).
+- `core/gpu/learn_stream.cpp` + `core/tests/exp_learn_gpu.py`
+  (`make stream-learn-gpu`, `CORPUS=`): per-input and CLS learners on
+  the GPU, one block per unit in fp64 and Python's operation order. The
+  same source built without hipcc equals the Python learners to 12
+  decimals on a frozen corpus; the GPU build reproduced the Python run's
+  figures on a snapshot of this repo in 2.1 min against 25.5 min (the
+  CPU run also held the NE-gain learner), with 1–4 s of device time per
+  learner.
+- `exp_learn_gpu.py` variant: CLS with the neocortex also at the
+  metaplastic rate 1/n scores 2.217 bits per byte on the held-out test
+  against the normalised-count control's 2.270 (same snapshot, one
+  split, one run), the first learner below the control. The five other
+  rows reproduced the previous GPU run to six decimals.
+- Salted splits: `exp_learn_stream.split(path, salt)` (the empty salt is
+  the default split) and `exp_learn_gpu.py --salts ... --only ...`
+  (`GPUARGS=` in `make stream-learn-gpu`), with a learner-minus-control
+  summary per split and across splits. Over the default and four salted
+  splits, CLS with a metaplastic neocortex is below the control on four
+  and level on one (mean −0.030 bits per byte); CLS with a constant-rate
+  neocortex is above it on all five (mean +0.208).
+- `exp_learn_gpu.py` runs every (split, learner) pair and each split's
+  control as its own process; the GPU is shared behind a lock and input
+  preparation stays outside it. Identical figures to the single-process
+  run; LocusAI five splits in 129 s against 10 min 15 s. A second corpus,
+  the git-tracked text of `cicd_runner` (82 files, 460 KB): CLS with a
+  metaplastic neocortex below the control on all five splits (mean
+  −0.049). Resources are reported as wall, CPU core-seconds and GPU
+  device seconds; energy is not readable from inside WSL2 (`rocm-smi`
+  error 8, `amd-smi` finds no driver, no RAPL), while the Windows host's
+  AMD Software shows and can log GPU total board power.
+- `core/tools/perfmon.py` (+ `core/tests/test_perfmon.py`): `make bg`
+  samples per-CPU busy time and memory into `build/JOB.perf.csv` and
+  appends a summary to the job log. The control's lam fit computes the
+  lam-independent readout once (`control_parts`, `control_bpb`) instead
+  of rescoring for each of 17 lam values: identical figures on all ten
+  splits of both corpora, LocusAI five splits in 30 s (was 129 s) and
+  `cicd_runner` in 16 s (was 74 s). Measured during that run: 14.7 of 24
+  cores busy on average; per job 12–30 s of CPU against 0.2–1.0 s of GPU.
+- `core/gpu/learn_device.cpp`: the whole per-input and CLS learner on the
+  GPU — encoding, event emission, stable radix sort by unit, metaplastic
+  ranks, learning, scoring, the control's count histograms and the lam
+  grid. `exp_learn_gpu.py --engine device` sends raw bytes, encoder
+  tables and the CLS replay order; `make stream-learn-gpu` defaults to
+  it (`ENGINE=host` keeps the Python-events path). Equal to the
+  Python-events path to 4.4e-16 bits per byte (C++ build, frozen corpus)
+  and on every figure of both corpora (GPU build). LocusAI five splits:
+  12 s wall and 14 CPU core-seconds, from 30 s and 454.
+- `doc/core/ROADMAP.md` standing constraints: biology guides the inputs
+  and every result reports its resource cost; experiments run in the
+  project's GPU container; work is split across the GPU and all CPU
+  cores.
 - `doc/core/HIERARCHY.md` — design for compression by projection between
   pools of different sizes; within-pool recurrence at level 0 only. Not
   implemented.

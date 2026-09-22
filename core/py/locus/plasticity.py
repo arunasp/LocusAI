@@ -141,8 +141,36 @@ class Plasticity:
         self.observations += 1
         return len(self.traces)
 
+    def observe_error(self, before, errors):
+        """Signed tags from a local prediction error.
+
+        (i -> j) gets pre_i * err_j, where ``errors`` holds (unit, actual
+        minus predicted) for post units. The prediction is the post
+        unit's own, formed from its inputs, so the term stays local to
+        the synapse's two ends: the dendritic prediction of somatic
+        activity (Urbanczik & Senn 2014) and the Rescorla-Wagner error.
+        A post unit that was predicted but stayed silent gets a negative
+        tag, so depression needs no separate rule. Never touches a
+        weight.
+        """
+        decayed = {}
+        for key, tag in self.traces.items():
+            t = tag * self.trace_decay
+            if abs(t) > self.trace_floor:
+                decayed[key] = t
+        for i, pre in before:
+            for j, err in errors:
+                if err == 0.0:
+                    continue
+                key = (i, j)
+                decayed[key] = decayed.get(key, 0.0) + pre * err
+        self.traces = decayed
+        self.observations += 1
+        return len(self.traces)
+
     # ------------------------------------------------------------ slow --
-    def consolidate(self, modulator):
+    def consolidate(self, modulator, consume=False, bound=None,
+                    local=None):
         """Apply ``rate * tag * modulator`` to every tagged weight.
 
         The gate. With ``modulator`` zero nothing changes, whatever the
@@ -152,23 +180,47 @@ class Plasticity:
 
         Returns the number of weights touched, so a caller can tell a
         no-op apart from a silent failure.
+
+        ``consume``: the tags are captured by this modulator and cleared,
+        so a later modulator cannot apply them again (synaptic tagging
+        and capture). ``bound``: soft bounds on [0, bound] -- potentiation
+        scales by (1 - w / bound) and depression by (w / bound), so a
+        weight saturates instead of being clipped. This is the soft-bound
+        form A+(w) = (w_max - w) eta+, A-(w) = w eta- in Gerstner's STDP
+        review; van Rossum, Bi & Turrigiano (2000) use weight-dependent
+        depression with additive potentiation. ``local`` maps a source
+        unit to a multiplier on its synapses' changes: a synapse-local
+        factor such as metaplasticity, where a synapse's own history sets
+        how plastic it is; unlisted sources get 1. Without these
+        arguments, behaviour is unchanged.
         """
         if modulator == 0.0:
             return 0
         touched = 0
         for key, tag in self.traces.items():
             dw = self.rate * tag * modulator
+            if local is not None:
+                dw *= local.get(key[0], 1.0)
             if dw == 0.0:
                 continue
+            if bound is not None:
+                old = self.weights.get(key, 0.0)
+                dw *= (1.0 - old / bound) if dw > 0.0 else old / bound
+                if dw == 0.0:
+                    continue
             if key not in self.weights:
                 self._out.setdefault(key[0], set()).add(key[1])
             w = self.weights.get(key, 0.0) + dw
+            if bound is not None:
+                w = min(max(w, 0.0), bound)
             if w > self.w_max:
                 w = self.w_max
             elif w < -self.w_max:
                 w = -self.w_max
             self.weights[key] = w
             touched += 1
+        if consume:
+            self.traces = {}
         self.consolidations += 1
         return touched
 
@@ -228,6 +280,24 @@ class Plasticity:
                 self.weights[(i, j)] = w * factor
             rescaled += 1
         return rescaled
+
+    def scale_targets(self, factors):
+        """Homeostatic scaling per POST-synaptic target by a given factor.
+
+        ``factors`` maps a target to the multiplier for all its incoming
+        weights, so their relative sizes are kept (Turrigiano et al. 1998). The
+        caller derives each factor from that target's own activity
+        against its set point; nothing here chooses one. Returns how many
+        weights changed.
+        """
+        changed = 0
+        for (i, j), w in self.weights.items():
+            f = factors.get(j)
+            if f is None or f == 1.0 or f <= 0.0:
+                continue
+            self.weights[(i, j)] = w * f
+            changed += 1
+        return changed
 
     # ----------------------------------------------------------- reads --
     def weight(self, pre, post):

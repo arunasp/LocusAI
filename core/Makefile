@@ -79,6 +79,12 @@ SPLOG    = $(BUILD)/gpu-field-sparse.log
 QTSRC    = gpu/exp_field_quiet.cpp
 QTBIN    = $(BUILD)/exp_field_quiet
 QTLOG    = $(BUILD)/gpu-field-quiet.log
+LSSRC    = gpu/learn_stream.cpp
+LSBIN    = $(BUILD)/learn_stream
+LDSRC    = gpu/learn_device.cpp
+LDBIN    = $(BUILD)/learn_device
+ENGINE  ?= device
+CORPUS  ?= ..
 # Overridable so the result can be SWEPT rather than taken on trust:
 #   make excursion EXPN=8192 EXPNA=2048
 EXPN    ?= 4096
@@ -94,7 +100,7 @@ TESTBIN  = $(BUILD)/test_store
 # target shares its name with the gpu/ source directory, so without .PHONY
 # make sees the directory, considers the target satisfied, and silently does
 # nothing. Same collision the `build` target hit during the scaffold build.
-.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check rocm-headers rocm-image excursion bandwidth field-step field-sparse field-quiet gpu-cache hierarchy capacity operating-point stack singlepass precision stream stream-learn
+.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check rocm-headers rocm-image excursion bandwidth field-step field-sparse field-quiet gpu-cache hierarchy capacity operating-point stack singlepass precision stream stream-learn stream-learn-gpu bg
 
 # Sentinel file, deliberately NOT in .PHONY: a .PHONY listing would
 # force the install to re-run on every invocation regardless of
@@ -125,7 +131,7 @@ PIP_OFFLINE = $(if $(wildcard $(WHEELHOUSE)/*.whl),--no-index --find-links $(WHE
 # the C side; pycodestyle covers the Python layer.
 lint: .deps ## Static checks (gcc -fsyntax-only, pycodestyle)
 	$(CC) $(CFLAGS) -Isrc -fsyntax-only $(SRC) tests/test_store.c
-	$(PY) -m pycodestyle --max-line-length=79 py/locus tests gpu/tests
+	$(PY) -m pycodestyle --max-line-length=79 py/locus tests gpu/tests tools
 
 # No rule for $(BUILD) itself: it would collide with the phony `build`
 # target and silently drop the order-only prerequisite.
@@ -292,12 +298,58 @@ stream: .deps ## Encode the repo's text and score a reference next-byte predicto
 # a check variant that must reproduce the normalised-count control.
 # Repo root must be mounted, as for `stream`. Exit 2: a readout
 # parameter fitted at its grid edge.
-# Takes minutes on the LocusAI repo, beyond a tool call's time limit, so
-# run it detached and read the log:
-#   docker exec -d server-local-bash-1 sh -c 'cd /workspace/core &&
-#     python3 -u tests/exp_learn_stream.py .. > build/stream-learn.log 2>&1'
+# Takes minutes on the LocusAI repo, beyond a tool call's time limit: run
+# it through `bg` (below).
 stream-learn: .deps ## Learn next-byte structure from the repo's text and score it (minutes)
 	@$(VENV)/bin/python3 tests/exp_learn_stream.py ..
+
+# The per-input learners (branch, CLS) on the GPU: each unit's events are
+# replayed in one block, in the Python learners' fp64 operation order; on
+# the LocusAI corpus the scores equal the Python run's printed figures.
+# CORPUS defaults to the repo root; GPUARGS passes --salts / --only (see
+# tests/exp_learn_gpu.py). ENGINE=device (default) runs encoding, event
+# sorting, learning, the control and the lam grid on the GPU
+# (gpu/learn_device.cpp); ENGINE=host builds events in Python and uses
+# gpu/learn_stream.cpp, kept as the reference for that path. Runs in the
+# project container (hipcc);
+# start it through `bg`. Sequential learners stay in `stream-learn`.
+stream-learn-gpu: hip-header-check ## Branch and CLS learners on the GPU, scored as stream-learn
+	@if command -v $(HIPCC) >/dev/null 2>&1; then \
+		mkdir -p $(BUILD) && \
+		$(GPU_ENV) $(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(LSBIN) $(LSSRC) && \
+		$(GPU_ENV) $(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(LDBIN) $(LDSRC) && \
+		$(GPU_ENV) $(PYTHON3) -u tests/exp_learn_gpu.py $(CORPUS) \
+			$(if $(filter host,$(ENGINE)),$(LSBIN),$(LDBIN)) \
+			--engine $(ENGINE) $(GPUARGS); \
+	else \
+		echo "stream-learn-gpu: $(HIPCC) not found -- skipped"; \
+	fi
+
+# Long jobs exceed a tool call, and polling them through the cicd_runner
+# coordinator blocks its single event loop. Start them detached in the
+# project container with ONE call, then read build/$(JOB).log through the
+# Filesystem connector until its last line is exit=N:
+#   docker exec -d --user 1000:1000 -w /workspace/core server-local-bash-1 \
+#     make bg JOB=stream-branch \
+#     CMD='python3 -u tests/exp_learn_stream.py .. branch'
+# The container has no .venv of its own, so CMD uses python3 directly;
+# the experiments need only the standard library. CMD reaches the shell
+# only through sh -c "$$BG_CMD": the argument check is make-level and the
+# header echoes the variable, so quotes in CMD are never re-parsed.
+# Every job is monitored: tools/perfmon.py samples CPU and memory into
+# build/JOB.perf.csv and its summary lands in the log before exit=N.
+bg: export BG_CMD = $(value CMD)
+bg: ## Run CMD with all output in build/JOB.log, ending in an exit=N line
+	$(if $(and $(JOB),$(CMD)),,$(error bg: JOB and CMD are required))
+	@mkdir -p $(BUILD)
+	@{ echo "[start] $$(date -u +%FT%TZ) $$BG_CMD"; \
+	   $(PYTHON3) tools/perfmon.py record $(BUILD)/$(JOB).perf.csv & pm=$$!; \
+	   sh -c "$$BG_CMD"; rc=$$?; \
+	   kill $$pm; wait $$pm; \
+	   echo "[end] $$(date -u +%FT%TZ)"; \
+	   $(PYTHON3) tools/perfmon.py summary $(BUILD)/$(JOB).perf.csv; \
+	   echo "exit=$$rc"; } \
+		> $(BUILD)/$(JOB).log 2>&1
 
 # Host side of the memory hierarchy: CPU cache sweep, DRAM write and
 # O_DIRECT disk I/O on this repo's filesystem (a 256 MiB temp file in

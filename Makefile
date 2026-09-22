@@ -36,7 +36,8 @@ PACK_FILES ?= $(wildcard core/src/*.h core/src/*.c core/py/locus/*.py \
                          doc/core/*.md) \
               core/Makefile core/requirements.txt
 
-.PHONY: lint test build deploy verify e2e all core pack unpack wheels
+.PHONY: lint test build deploy verify e2e all core pack unpack wheels \
+        digests gitops-verify commit-verified squash-for-push
 
 lint: ## Static checks (tools/pipeline.sh lint)
 	tools/pipeline.sh lint
@@ -94,3 +95,25 @@ $(WHEELHOUSE)/.stamp: $(REQS)
 	@touch $@
 
 wheels: $(WHEELHOUSE)/.stamp ## Populate an offline wheelhouse from requirements
+
+# --- delivery -------------------------------------------------------------
+# cicd/gitops.py: each step is one call with its checks built in. Commit
+# messages come from a file; keep it under .git/ so writing it never dirties
+# the tree. Verified against clean, dirty, no-op and failure scenarios by
+# `make gitops-verify` (throwaway repos, nothing here is touched).
+GITOPS ?= $(PYTHON3) cicd/gitops.py
+MSG    ?= .git/locus-msg.txt
+
+digests: ## Size and sha256 of FILES (read-back after a transfer)
+	@$(GITOPS) digests $(FILES)
+
+gitops-verify: ## Verify gitops.py against throwaway repos (23 scenarios)
+	@cd cicd && $(PYTHON3) verify_gitops.py
+
+commit-verified: ## Run the core pipeline, then stage exactly FILES and commit with MSG
+	@$(GITOPS) commit-verified --msg $(MSG) -- $(FILES)
+
+# DESTROYS per-commit history on the current branch. The surviving copy is
+# the backup/pre-squash-<UTC stamp> branch it creates before moving anything.
+squash-for-push: ## Squash all commits ahead of upstream into one, backup branch first
+	@$(GITOPS) squash --msg $(MSG)
