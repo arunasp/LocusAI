@@ -406,6 +406,14 @@ fp-rate: ## Measure fp32 vs fp64 arithmetic and streaming rate
 	echo "fp-rate: $(HIPCC) not found -- skipped"; \
 	fi
 
+# Every run of the real tasks is kept in build/bench/history.csv, with
+# each task's own headline figure beside its time -- the evidence that
+# decides whether the execution layer (core/py/locus/execution.py, work
+# in progress) is a gain across tasks rather than in one. BENCHTASKS=...
+# picks a subset.
+bench: ## Time the real tasks and append to build/bench/history.csv
+	$(PYTHON3) tools/bench.py $(BUILD)/bench $(BENCHTASKS)
+
 # Long jobs exceed a tool call, and polling them through the cicd_runner
 # coordinator blocks its single event loop. Start them detached in the
 # project container with ONE call, then read build/$(JOB).log through the

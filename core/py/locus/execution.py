@@ -1,5 +1,13 @@
 """Where work runs: the device first, then every core, then elsewhere.
 
+STATUS: WORK IN PROGRESS (Arunas, 2026-09-22). This layer stays
+provisional until its gain is proven over MULTIPLE tasks, not one.
+Every port must be measured before and after and the figures recorded
+(`make bench` writes build/bench/history.csv); a port that costs time or
+changes a figure is a reason to revert, not to explain. Until that
+evidence exists, do not build anything new that depends on this module
+being final.
+
 One place decides placement, so callers describe work and not machinery.
 The standing constraint (doc/core/ROADMAP.md) is the GPU first and all
 CPU cores second; until now each caller re-implemented that, and the
