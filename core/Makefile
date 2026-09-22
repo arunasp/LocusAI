@@ -394,6 +394,18 @@ hf-data: ## Fetch a bounded slice of a Hugging Face dataset into build/data
 experiments: ## Run the field experiments concurrently into build/exps
 	$(PYTHON3) tools/run_exps.py $(BUILD)/exps $(EXPS)
 
+# What each precision costs on this card: fp32 vs fp64 arithmetic and
+# streaming rate. Measured 2026-09-22 on gfx1100: fp32 arithmetic 33.4x
+# fp64, but streaming only 1.85x per value -- so a bandwidth-bound kernel
+# gains far less than an arithmetic-bound one.
+fp-rate: ## Measure fp32 vs fp64 arithmetic and streaming rate
+	@if command -v $(HIPCC) >/dev/null 2>&1; then \
+	$(GPU_ENV) $(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(BUILD)/exp_fp_rate gpu/exp_fp_rate.cpp && \
+	$(GPU_ENV) $(BUILD)/exp_fp_rate; \
+	else \
+	echo "fp-rate: $(HIPCC) not found -- skipped"; \
+	fi
+
 # Long jobs exceed a tool call, and polling them through the cicd_runner
 # coordinator blocks its single event loop. Start them detached in the
 # project container with ONE call, then read build/$(JOB).log through the
