@@ -101,7 +101,7 @@ TESTBIN  = $(BUILD)/test_store
 # target shares its name with the gpu/ source directory, so without .PHONY
 # make sees the directory, considers the target satisfied, and silently does
 # nothing. Same collision the `build` target hit during the scaffold build.
-.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check rocm-headers rocm-image excursion bandwidth field-step field-sparse field-quiet gpu-cache hierarchy capacity operating-point stack singlepass precision stream stream-learn stream-learn-gpu bg
+.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check rocm-headers rocm-image excursion bandwidth field-step field-sparse field-quiet gpu-cache hierarchy capacity operating-point stack singlepass precision stream stream-learn stream-learn-gpu bg jobs job-stop job-clean
 
 # Sentinel file, deliberately NOT in .PHONY: a .PHONY listing would
 # force the install to re-run on every invocation regardless of
@@ -430,8 +430,11 @@ bench: ## Time the real tasks and append to build/bench/history.csv
 bg: export BG_CMD = $(value CMD)
 bg: ## Run CMD with all output in build/JOB.log, ending in an exit=N line
 	$(if $(and $(JOB),$(CMD)),,$(error bg: JOB and CMD are required))
-	@mkdir -p $(BUILD)
+	@mkdir -p $(BUILD)/jobs
 	@{ echo "[start] $$(date -u +%FT%TZ) $$BG_CMD"; \
+	   printf '{"job":"%s","pid":%s,"log":"%s","start":%s}\n' \
+	     "$(JOB)" "$$$$" "$(BUILD)/$(JOB).log" "$$(date -u +%s)" \
+	     > $(BUILD)/jobs/$(JOB).json; \
 	   $(PYTHON3) tools/perfmon.py record $(BUILD)/$(JOB).perf.csv & pm=$$!; \
 	   sh -c "$$BG_CMD"; rc=$$?; \
 	   kill $$pm; wait $$pm; \
@@ -439,6 +442,21 @@ bg: ## Run CMD with all output in build/JOB.log, ending in an exit=N line
 	   $(PYTHON3) tools/perfmon.py summary $(BUILD)/$(JOB).perf.csv; \
 	   echo "exit=$$rc"; } \
 		> $(BUILD)/$(JOB).log 2>&1
+
+# Who is running what, and what an interrupted turn left behind. `make
+# bg` records every job under build/jobs, and these read /proc directly
+# (the image has no ps). `job-stop` signals a job's whole tree and says
+# plainly when a process SURVIVES SIGKILL -- which means it is wedged in
+# the GPU driver and only a container restart releases the device.
+jobs: ## List recorded jobs and what they are doing now
+	$(PYTHON3) tools/jobs.py $(BUILD) list
+
+job-stop: ## Stop one job's process tree (JOB=name)
+	$(if $(JOB),,$(error job-stop: JOB is required))
+	$(PYTHON3) tools/jobs.py $(BUILD) stop $(JOB)
+
+job-clean: ## Report orphans and zombies, drop finished job records
+	$(PYTHON3) tools/jobs.py $(BUILD) clean
 
 # Host side of the memory hierarchy: CPU cache sweep, DRAM write and
 # O_DIRECT disk I/O on this repo's filesystem (a 256 MiB temp file in
