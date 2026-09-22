@@ -153,6 +153,21 @@ __global__ void emit(Enc e, const uint8_t *d, const int64_t *fs, int32_t nf,
 
 static const int C = 256;
 
+// Events applied per unit per `learn` launch. It bounds how long one
+// launch can hold the device, which is what keeps the driver watchdog
+// out of this; it does not change any result, only how the same work
+// is divided across launches.
+static const int64_t LEARN_SPAN = 1 << 20;
+
+// Events each unit has already seen, so the metaplastic 1/n keeps
+// counting across batches.
+__global__ void add_rows(int64_t *base, const int64_t *rowptr, int32_t U)
+{
+    int64_t u = blockIdx.x * (int64_t)blockDim.x + threadIdx.x;
+    if (u < (int64_t)U)
+        base[u] += rowptr[u + 1] - rowptr[u];
+}
+
 __global__ void rs_count(const uint32_t *key, int64_t n, int shift,
                          int64_t *hist, int64_t nt)
 {
@@ -237,14 +252,34 @@ __global__ void unit_hist(const uint32_t *key, int64_t n, int64_t *cnt)
         atomicAdd((unsigned long long *)&cnt[key[i]], 1ULL);
 }
 
+// A unit's events must be applied IN ORDER (the metaplastic rate is
+// 1/n over that unit's own history), so one block owns one unit and
+// walks its list serially. Event counts per unit are extremely skewed
+// in text -- the space character and the commonest bigrams carry a
+// large share -- so on a big corpus the hottest block alone would run
+// for minutes inside ONE launch, past any driver watchdog: a 134 MB
+// corpus hung the device with the card idle at 3% and
+// hipDeviceSynchronize never returning.
+//
+// The fix keeps the arithmetic identical and bounds the LAUNCH: each
+// call advances every unit by at most `span` of its own events,
+// resuming the accumulator from W (zeroed before the first chunk).
+// Same operations, same order, one launch per span.
 __global__ void learn(const int64_t *rowptr, const uint8_t *nxt, double rate,
-                      int meta, double *W)
+                      int meta, double *W, int64_t chunk_lo, int64_t span,
+                      const int64_t *base)
 {
     int u = blockIdx.x, b = threadIdx.x;
-    double w = 0.0;
-    int64_t r0 = rowptr[u];
-    for (int64_t e = r0; e < rowptr[u + 1]; ++e) {
-        double loc = meta ? 1.0 / (rate * (double)(e - r0 + 1)) : 1.0;
+    int64_t r0 = rowptr[u], r1 = rowptr[u + 1];
+    int64_t lo = r0 + chunk_lo;
+    if (lo >= r1)
+        return;
+    int64_t hi = lo + span < r1 ? lo + span : r1;
+    double w = W[(int64_t)u * B + b];
+    for (int64_t e = lo; e < hi; ++e) {
+        double loc = meta
+                         ? 1.0 / (rate * (double)(base[u] + (e - r0) + 1))
+                         : 1.0;
         w = step(w, b, nxt[e], rate, loc, meta != 0);
     }
     W[(int64_t)u * B + b] = w;
@@ -386,56 +421,109 @@ static double *store(const Enc &e, const uint8_t *dd, const int64_t *dfs,
                      bool top_only, bool meta, double rate,
                      std::vector<int64_t> *events)
 {
-    int64_t n = sched.size(), K = e.T + 1, E = n * K;
-    int64_t *ds = up(sched);
-    uint32_t *k0, *k1;
-    uint8_t *v0, *v1;
-    CHECK(hipMalloc(&k0, (E + 1) * 4));
-    CHECK(hipMalloc(&k1, (E + 1) * 4));
-    CHECK(hipMalloc(&v0, E + 1));
-    CHECK(hipMalloc(&v1, E + 1));
-    if (n) {
-        emit<<<(n + 255) / 256, 256>>>(e, dd, dfs, nf, ds, n, top_only, k0,
-                                        v0);
-        CHECK(hipGetLastError());
-    }
-    int64_t nt = (E + C - 1) / C;
-    int64_t *hist;
-    CHECK(hipMalloc(&hist, std::max<int64_t>(1, 256 * nt) * 8));
-    for (int shift = 0; shift < 24 && E; shift += 8) {
-        rs_count<<<(nt + 255) / 256, 256>>>(k0, E, shift, hist, nt);
-        CHECK(hipGetLastError());
-        scan(hist, 256 * nt);
-        rs_scatter<<<(nt + 255) / 256, 256>>>(k0, v0, k1, v1, E, shift, hist,
-                                               nt);
-        CHECK(hipGetLastError());
-        std::swap(k0, k1);
-        std::swap(v0, v1);
-    }
-    int64_t *rowptr;
-    CHECK(hipMalloc(&rowptr, (e.U + 2) * 8));
-    CHECK(hipMemset(rowptr, 0, (e.U + 2) * 8));
-    if (E) {
-        unit_hist<<<(E + 255) / 256, 256>>>(k0, E, rowptr);
-        CHECK(hipGetLastError());
-    }
-    scan(rowptr, e.U + 2);
+    int64_t n = sched.size(), K = e.T + 1;
+
+    // Peak VRAM here is LINEAR IN EVENTS: 4+4 bytes of radix keys, 1+1
+    // of values and 8 of histogram per event, about 18 B. A 134 MB
+    // corpus (~630M events) therefore asked for ~11 GB and, with the
+    // weight arrays, left a 20 GB card at 19.8 GB in use -- nothing
+    // spare for the desktop, and the driver hung with the card idle,
+    // the same failure a large model causes when it leaves no headroom.
+    //
+    // So the schedule runs in BATCHES sized from the free memory
+    // measured now, minus a reserve for the rest of the system
+    // (LOCUS_VRAM_RESERVE_MB, default 3072 -- an initial value from
+    // Arunas's experience of Ollama needing ~3 GB free, not a tuned
+    // constant). Results are unchanged: batches follow stream order, so
+    // every unit still sees its own events in order, and `base` carries
+    // how many it has seen so the metaplastic 1/n keeps counting.
+    size_t freeb = 0, totalb = 0;
+    CHECK(hipMemGetInfo(&freeb, &totalb));
+    const char *rv = std::getenv("LOCUS_VRAM_RESERVE_MB");
+    size_t reserve = (size_t)(rv ? std::atoll(rv) : 3072) << 20;
+    size_t weights = (size_t)e.U * B * sizeof(double) + (size_t)e.U * 8;
+    size_t usable = freeb > reserve + weights ? freeb - reserve - weights
+                                              : 0;
+    int64_t per_event = 4 + 4 + 1 + 1 + 8;
+    int64_t max_events = std::max<int64_t>(
+        1 << 20, (int64_t)(usable / (size_t)per_event));
+    int64_t batch = std::max<int64_t>(1, max_events / K);
+    if (n && batch < n)
+        std::fprintf(stderr,
+                     "learn_device: %lld positions in batches of %lld "
+                     "(%.1f GB free, %.1f GB reserved)\n",
+                     (long long)n, (long long)batch, freeb / 1e9,
+                     (double)reserve / 1e9);
+
     double *W;
     CHECK(hipMalloc(&W, (size_t)e.U * B * sizeof(double)));
-    learn<<<e.U, B>>>(rowptr, v0, rate, meta ? 1 : 0, W);
-    CHECK(hipGetLastError());
-    CHECK(hipDeviceSynchronize());
-    if (events) {
-        std::vector<int64_t> rp(e.U + 1);
-        CHECK(hipMemcpy(rp.data(), rowptr, (e.U + 1) * 8,
+    CHECK(hipMemset(W, 0, (size_t)e.U * B * sizeof(double)));
+    int64_t *base;
+    CHECK(hipMalloc(&base, std::max<size_t>(1, (size_t)e.U) * 8));
+    CHECK(hipMemset(base, 0, std::max<size_t>(1, (size_t)e.U) * 8));
+
+    for (int64_t p0 = 0; p0 < n; p0 += batch) {
+        int64_t bn = std::min<int64_t>(batch, n - p0);
+        int64_t E = bn * K;
+        std::vector<int64_t> slice(sched.begin() + p0,
+                                   sched.begin() + p0 + bn);
+        int64_t *ds = up(slice);
+        uint32_t *k0, *k1;
+        uint8_t *v0, *v1;
+        CHECK(hipMalloc(&k0, (E + 1) * 4));
+        CHECK(hipMalloc(&k1, (E + 1) * 4));
+        CHECK(hipMalloc(&v0, E + 1));
+        CHECK(hipMalloc(&v1, E + 1));
+        emit<<<(bn + 255) / 256, 256>>>(e, dd, dfs, nf, ds, bn, top_only,
+                                        k0, v0);
+        CHECK(hipGetLastError());
+        int64_t nt = (E + C - 1) / C;
+        int64_t *hist;
+        CHECK(hipMalloc(&hist, std::max<int64_t>(1, 256 * nt) * 8));
+        for (int shift = 0; shift < 24 && E; shift += 8) {
+            rs_count<<<(nt + 255) / 256, 256>>>(k0, E, shift, hist, nt);
+            CHECK(hipGetLastError());
+            scan(hist, 256 * nt);
+            rs_scatter<<<(nt + 255) / 256, 256>>>(k0, v0, k1, v1, E, shift,
+                                                  hist, nt);
+            CHECK(hipGetLastError());
+            std::swap(k0, k1);
+            std::swap(v0, v1);
+        }
+        int64_t *rowptr;
+        CHECK(hipMalloc(&rowptr, (e.U + 2) * 8));
+        CHECK(hipMemset(rowptr, 0, (e.U + 2) * 8));
+        if (E) {
+            unit_hist<<<(E + 255) / 256, 256>>>(k0, E, rowptr);
+            CHECK(hipGetLastError());
+        }
+        scan(rowptr, e.U + 2);
+        std::vector<int64_t> rp_host(e.U + 1);
+        CHECK(hipMemcpy(rp_host.data(), rowptr, (e.U + 1) * 8,
                         hipMemcpyDeviceToHost));
-        events->assign(e.U, 0);
+        int64_t max_row = 0;
         for (int32_t u = 0; u < e.U; ++u)
-            (*events)[u] = rp[u + 1] - rp[u];
+            max_row = std::max(max_row, rp_host[u + 1] - rp_host[u]);
+        for (int64_t lo = 0; lo < max_row; lo += LEARN_SPAN) {
+            learn<<<e.U, B>>>(rowptr, v0, rate, meta ? 1 : 0, W, lo,
+                              LEARN_SPAN, base);
+            CHECK(hipGetLastError());
+            CHECK(hipDeviceSynchronize());
+        }
+        add_rows<<<(e.U + 255) / 256, 256>>>(base, rowptr, e.U);
+        CHECK(hipGetLastError());
+        CHECK(hipDeviceSynchronize());
+        for (void *q : {(void *)ds, (void *)k0, (void *)k1, (void *)v0,
+                        (void *)v1, (void *)hist, (void *)rowptr})
+            CHECK(hipFree(q));
     }
-    for (void *q : {(void *)ds, (void *)k0, (void *)k1, (void *)v0,
-                    (void *)v1, (void *)hist, (void *)rowptr})
-        CHECK(hipFree(q));
+    if (events) {
+        events->assign(e.U, 0);
+        if (e.U)
+            CHECK(hipMemcpy(events->data(), base, (size_t)e.U * 8,
+                            hipMemcpyDeviceToHost));
+    }
+    CHECK(hipFree(base));
     return W;
 }
 #else
