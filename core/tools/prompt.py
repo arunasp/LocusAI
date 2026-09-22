@@ -1,7 +1,7 @@
 """Read a prompt against a knowledge store.
 
   prompt.py KNOW [--file F] [--no-learn] [--outcome X]
-  prompt.py KNOW --score
+  prompt.py KNOW --score [--procs N]
 
 A prompt is one more stream: each byte is predicted from what came before
 it, then learned (unless --no-learn). The report gives bits per byte,
@@ -11,10 +11,14 @@ later readers see; the outcome X (default 1; 0 records none) is logged at
 the current tick. LocusAI sleeps by itself, before learning more, once
 its sleep pressure reaches the threshold; sleep.py forces a sleep.
 
---score rescores the held-out test split with learning off. On the
-generation the device measured, it must equal the device's figure.
+--score rescores the held-out test split with learning off, one process
+per core over the files (Python threads share one core under the GIL, so
+processes are the only way to use the machine). Per-file bits are summed
+in file order, so the result is deterministic. On the generation the
+device measured, it must equal the device's figure.
 """
 
+import multiprocessing
 import os
 import sys
 import time
@@ -32,17 +36,37 @@ def show(b):
     return repr(c)[1:-1] if not c.isprintable() or c in "\\'" else c
 
 
-def score(k):
+_STORE = None
+
+
+def _score_one(data):
+    """(bits, predictions) for one file, in a worker process."""
+    b = _STORE.read(data, learn=False)
+    return sum(b), len(b)
+
+
+def score(k, procs=None):
     import exp_learn_stream as X
+    global _STORE
     m = k.meta
     files = [d for p, d in repo_files(m["corpus"])
              if X.split(p, m["salt"]) == "test"]
+    _STORE = k
+    procs = max(1, min(len(files), procs or os.cpu_count() or 1))
+    t0, c0 = time.time(), time.process_time()
+    if procs > 1:
+        ctx = multiprocessing.get_context("fork")
+        with ctx.Pool(procs) as pool:
+            parts = pool.map(_score_one, files, chunksize=1)
+    else:
+        parts = [_score_one(d) for d in files]
     bits = n = 0
-    for data in files:
-        b = k.read(data, learn=False)
-        bits += sum(b)
-        n += len(b)
+    for fb, fn in parts:
+        bits += fb
+        n += fn
     got = bits / max(n, 1)
+    print("scored      %d files on %d processes in %.1f s"
+          % (len(files), procs, time.time() - t0))
     gen = m.get("generation", 0)
     print("test split  %d files, %d predictions" % (len(files), n))
     if gen:
@@ -67,9 +91,10 @@ def main(argv):
     rest, src, learn, outcome = argv[1:], None, True, 1.0
     load = time.time() - t0
     if rest[:1] == ["--score"]:
+        procs = int(rest[2]) if rest[1:2] == ["--procs"] else None
         print("store       %s (%s), loaded in %.1f s"
               % (argv[0], k.meta["learner"], load))
-        return score(k)
+        return score(k, procs)
     while rest:
         if rest[0] == "--file" and len(rest) > 1:
             src, rest = rest[1], rest[2:]

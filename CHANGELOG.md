@@ -227,6 +227,13 @@ versions, since nothing is released yet.
   metaplastic neocortex 1.870847, -0.096 bits per byte). The guard could
   not distinguish "pinned by the grid" from "best there"; now it can.
   5 tests in `core/tests/test_fit_lam.py`.
+- `make prompt PROMPTARGS=--score` scores the test split one process per
+  core over the files (`--procs N` to cap), summing per-file bits in file
+  order so the result stays deterministic. Python threads share one core
+  under the GIL, so processes are the only way to use the machine. On the
+  English store: 418 s on 1 core (1.4 of 24 busy) to 37.9 s on 24
+  (21.0 busy, 87%), same figure 1.858931205891, device difference
+  1.1e-15.
 - `doc/core/ROADMAP.md` standing constraints: biology guides the inputs
   and every result reports its resource cost; experiments run in the
   project's GPU container; work is split across the GPU and all CPU
