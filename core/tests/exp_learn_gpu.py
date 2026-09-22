@@ -254,7 +254,11 @@ def job(spec):
     return out
 
 
-LAMS = [2.0 ** k for k in range(-12, 5)]
+# The device scores every lam in one call, so extending the grid after
+# the fact would mean training again; it is therefore wide enough to
+# hold the optimum for the corpora seen so far (code fits near 2^-4,
+# English below 2^-12) and the edge flag still reports if it is not.
+LAMS = [2.0 ** k for k in range(-24, 9)]
 KINDS = {"branch": 0, "cls": 1, "control": 2}
 
 

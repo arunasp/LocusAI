@@ -162,11 +162,28 @@ def control_bpb(parts, lam):
     return bits / max(len(dnext), 1)
 
 
-def fit_lam(scorer):
-    """lam on a grid of powers of two; returns (score, lam, at_edge)."""
-    fits = [(scorer(2.0 ** k), 2.0 ** k) for k in range(-12, 5)]
-    best, lam = min(fits)
-    return best, lam, lam in (fits[0][1], fits[-1][1])
+def fit_lam(scorer, lo=-12, hi=4, limit=64):
+    """lam on a grid of powers of two, EXTENDED until the best value is
+    interior: a minimum sitting on a boundary means the grid, not the
+    data, chose it. Returns (score, lam, at_edge); at_edge is true only
+    if `limit` extensions were not enough, which is a harness bound, not
+    a fitted value."""
+    fits = {k: scorer(2.0 ** k) for k in range(lo, hi + 1)}
+    for _ in range(limit):
+        k = min(fits, key=lambda x: (fits[x], x))
+        # extend only while the boundary is still IMPROVING outward: a
+        # plateau means the grid is already wide enough, and extending
+        # on a tie would walk off without ever finding anything better.
+        if k == lo and fits[lo] < fits[lo + 1]:
+            lo -= 1
+            fits[lo] = scorer(2.0 ** lo)
+        elif k == hi and fits[hi] < fits[hi - 1]:
+            hi += 1
+            fits[hi] = scorer(2.0 ** hi)
+        else:
+            return fits[k], 2.0 ** k, False
+    k = min(fits, key=lambda x: (fits[x], x))
+    return fits[k], 2.0 ** k, k in (lo, hi)
 
 
 def reference(counts, enc, test):
