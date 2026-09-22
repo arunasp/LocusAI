@@ -344,6 +344,19 @@ class Hierarchy(unittest.TestCase):
                          "not learn")
         self.assertEqual(up.n, r.chunks)
 
+    def test_stack_default_stride_does_not_cap_chunks_at_n_over_4(self):
+        # At stride k the survey caps chunks at n/k. The explicit
+        # stride=4 run is the negated case: it must sit at the cap,
+        # or this test cannot tell the default from it.
+        n = 24
+        capped = Cycle(n, ring_kernel(n, 70), beta=3.0).drive_and_stack(
+            evidence=[0], max_levels=1, stride=4)[0]["chunks"]
+        self.assertEqual(capped, n // 4)
+        got = Cycle(n, ring_kernel(n, 70), beta=3.0).drive_and_stack(
+            evidence=[0], max_levels=1)[0]["chunks"]
+        self.assertGreater(got, n // 4,
+                           "default stride still caps level-0 chunks")
+
 
 if __name__ == "__main__":
     unittest.main()

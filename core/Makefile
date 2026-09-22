@@ -6,8 +6,15 @@
 #   run_in_directory(relative_path="LocusAI/core", binary="make",
 #                    args=["all"])
 # See cicd_runner's examples/project-skeleton/ for the convention.
+#
+# Prefer the image's copy. A worker mounting only core/ sees just
+# /etc/cicd-common.mk, but one mounting the repo root (needed by `stream`)
+# sees ../cicd-common.mk too, and including both redefines `help`.
+ifeq ($(wildcard /etc/cicd-common.mk),)
 -include ../cicd-common.mk
--include /etc/cicd-common.mk
+else
+include /etc/cicd-common.mk
+endif
 
 CC      ?= gcc
 CFLAGS  ?= -std=c11 -Wall -Wextra -Werror -O2
@@ -57,6 +64,21 @@ MOCKDRV  = gpu/tests/gpu_mock_driver.py
 EXPSRC   = gpu/exp_excursion.cpp
 EXPBIN   = $(BUILD)/exp_excursion
 EXPLOG   = $(BUILD)/gpu-excursion.log
+BWSRC    = gpu/exp_bandwidth.cpp
+BWBIN    = $(BUILD)/exp_bandwidth
+BWLOG    = $(BUILD)/gpu-bandwidth.log
+FSSRC    = gpu/exp_field_step.cpp
+FSBIN    = $(BUILD)/exp_field_step
+FSLOG    = $(BUILD)/gpu-field-step.log
+GCSRC    = gpu/exp_gpu_cache.cpp
+GCBIN    = $(BUILD)/exp_gpu_cache
+GCLOG    = $(BUILD)/gpu-cache.log
+SPSRC    = gpu/exp_field_sparse.cpp
+SPBIN    = $(BUILD)/exp_field_sparse
+SPLOG    = $(BUILD)/gpu-field-sparse.log
+QTSRC    = gpu/exp_field_quiet.cpp
+QTBIN    = $(BUILD)/exp_field_quiet
+QTLOG    = $(BUILD)/gpu-field-quiet.log
 # Overridable so the result can be SWEPT rather than taken on trust:
 #   make excursion EXPN=8192 EXPNA=2048
 EXPN    ?= 4096
@@ -72,7 +94,7 @@ TESTBIN  = $(BUILD)/test_store
 # target shares its name with the gpu/ source directory, so without .PHONY
 # make sees the directory, considers the target satisfied, and silently does
 # nothing. Same collision the `build` target hit during the scaffold build.
-.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check rocm-headers rocm-image excursion capacity operating-point stack
+.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check rocm-headers rocm-image excursion bandwidth field-step field-sparse field-quiet gpu-cache hierarchy capacity operating-point stack singlepass precision stream stream-learn
 
 # Sentinel file, deliberately NOT in .PHONY: a .PHONY listing would
 # force the install to re-run on every invocation regardless of
@@ -244,6 +266,52 @@ operating-point: .deps ## Reconcile sparsity, capacity and compression against i
 stack: .deps ## Drive the hierarchy upward and report depth and compression
 	@$(VENV)/bin/python3 tests/exp_stack.py
 
+# Whether the per-area inhibition sums can be carried from the previous
+# step's write instead of re-reduced, removing a launch per tick on a GPU
+# with no grid-wide barrier. Includes a lagged negative control; exit 2
+# means the control went undetected. No GPU needed.
+singlepass: .deps ## Check carried inhibition sums against the reference update
+	@$(VENV)/bin/python3 tests/exp_singlepass.py
+
+# Whether FP8 or block-scaled FP4 kernel weights change which attractor
+# a cue reaches. Exit 2 means a settle ended on its budget. No GPU needed.
+precision: .deps ## Attractor survival under FP8 and FP4 kernel weights
+	@$(VENV)/bin/python3 tests/exp_precision.py
+
+# Real input: the repository's own text files through the byte + hashed
+# n-gram encoder, with a reference bits-per-byte score to beat. Reads the
+# repo root (..), so a cicd_runner worker must mount the repo, not core/:
+#   run_in_directory(relative_path="LocusAI", binary="make",
+#                    args=["-C", "core", "stream"])
+stream: .deps ## Encode the repo's text and score a reference next-byte predictor
+	@$(VENV)/bin/python3 tests/exp_stream.py ..
+
+# Three-factor learning on the same stream: directional tags, surprise as
+# modulator, per-source scaling at each file end; scored against the
+# count reference on held-out files, with an ablation of the learner and
+# a check variant that must reproduce the normalised-count control.
+# Repo root must be mounted, as for `stream`. Exit 2: a readout
+# parameter fitted at its grid edge.
+# Takes minutes on the LocusAI repo, beyond a tool call's time limit, so
+# run it detached and read the log:
+#   docker exec -d server-local-bash-1 sh -c 'cd /workspace/core &&
+#     python3 -u tests/exp_learn_stream.py .. > build/stream-learn.log 2>&1'
+stream-learn: .deps ## Learn next-byte structure from the repo's text and score it (minutes)
+	@$(VENV)/bin/python3 tests/exp_learn_stream.py ..
+
+# Host side of the memory hierarchy: CPU cache sweep, DRAM write and
+# O_DIRECT disk I/O on this repo's filesystem (a 256 MiB temp file in
+# $(BUILD), removed after). Single-threaded. Under WSL2 the Windows host
+# cache may still serve disk reads. Exit 2: a figure ended on the cap.
+hierarchy: ## Host cache, DRAM and disk bandwidth (no GPU needed)
+	@mkdir -p $(BUILD) && \
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -o $(BUILD)/exp_hierarchy tests/exp_hierarchy.c -lm && \
+	{ $(BUILD)/exp_hierarchy $(BUILD) > $(BUILD)/hierarchy.log 2>&1; \
+	  rc=$$?; \
+	  cat $(BUILD)/hierarchy.log; \
+	  echo "[artifact] $(BUILD)/hierarchy.log  $$(stat -c%s $(BUILD)/hierarchy.log) bytes"; \
+	  exit $$rc; }
+
 # --- long-running HOST operations, logged ---------------------------------
 # These move megabytes to gigabytes and take minutes. They are deliberately
 # meant to be run BY HAND on the host, not through an agent tool call: a
@@ -399,6 +467,95 @@ excursion: hip-header-check ## Measure excursion depth on the device (skipped wi
 		  exit $$rc; }; \
 	else \
 		echo "excursion: $(HIPCC) not found -- skipped"; \
+	fi
+
+# Times device-memory and host<->device bandwidth, because memoryClockRate
+# is unreliable under GPU-PV. Feeds the ingestion IO check in
+# doc/core/HIERARCHY.md. Same one-shell / && / skip-not-fail contract as
+# `gpu`. Exit 2 means a figure ended on the cap rather than stabilising.
+bandwidth: hip-header-check ## Measure device and host<->device bandwidth (skipped without hipcc)
+	@if command -v $(HIPCC) >/dev/null 2>&1; then \
+		mkdir -p $(BUILD) && \
+		echo "$(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(BWBIN) $(BWSRC)" && \
+		$(GPU_ENV) $(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(BWBIN) $(BWSRC) && \
+		{ $(GPU_ENV) $(BWBIN) > $(BWLOG) 2>&1; \
+		  rc=$$?; \
+		  cat $(BWLOG); \
+		  echo "[artifact] $(BWLOG)  $$(stat -c%s $(BWLOG)) bytes"; \
+		  exit $$rc; }; \
+	else \
+		echo "bandwidth: $(HIPCC) not found -- skipped"; \
+	fi
+
+# Field.step on the device: carried inhibition partials must be bit-identical
+# to a separate reduce launch, a lagged control must differ, fp32 must match
+# a double-precision CPU replica's support. Then per-step time for fp32
+# two-launch, fp32 carried and fp8 carried. Exit 1: correctness failed;
+# exit 2: a timing ended on the cap.
+field-step: hip-header-check ## Field.step on the GPU: correctness and per-step time (skipped without hipcc)
+	@if command -v $(HIPCC) >/dev/null 2>&1; then \
+		mkdir -p $(BUILD) && \
+		echo "$(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(FSBIN) $(FSSRC)" && \
+		$(GPU_ENV) $(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(FSBIN) $(FSSRC) && \
+		{ $(GPU_ENV) $(FSBIN) > $(FSLOG) 2>&1; \
+		  rc=$$?; \
+		  cat $(FSLOG); \
+		  echo "[artifact] $(FSLOG)  $$(stat -c%s $(FSLOG)) bytes"; \
+		  exit $$rc; }; \
+	else \
+		echo "field-step: $(HIPCC) not found -- skipped"; \
+	fi
+
+# GPU read sweep from 256 KiB to 1 GiB (L2, Infinity Cache and VRAM
+# plateaus) plus LDS read bandwidth. Same contract as `bandwidth`.
+gpu-cache: hip-header-check ## GPU cache/VRAM read sweep and LDS bandwidth (skipped without hipcc)
+	@if command -v $(HIPCC) >/dev/null 2>&1; then \
+		mkdir -p $(BUILD) && \
+		echo "$(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(GCBIN) $(GCSRC)" && \
+		$(GPU_ENV) $(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(GCBIN) $(GCSRC) && \
+		{ $(GPU_ENV) $(GCBIN) > $(GCLOG) 2>&1; \
+		  rc=$$?; \
+		  cat $(GCLOG); \
+		  echo "[artifact] $(GCLOG)  $$(stat -c%s $(GCLOG)) bytes"; \
+		  exit $$rc; }; \
+	else \
+		echo "gpu-cache: $(HIPCC) not found -- skipped"; \
+	fi
+
+# Field.step with a sparse (gather-by-target) kernel against the dense one:
+# bit-identical trajectories, a descending-order control that must differ,
+# and per-step time from fixed states with the active-row count printed.
+# Exit 1: correctness failed; exit 2: a timing ended on the cap.
+field-sparse: hip-header-check ## Sparse vs dense Field.step on the GPU (skipped without hipcc)
+	@if command -v $(HIPCC) >/dev/null 2>&1; then \
+		mkdir -p $(BUILD) && \
+		echo "$(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(SPBIN) $(SPSRC)" && \
+		$(GPU_ENV) $(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(SPBIN) $(SPSRC) && \
+		{ $(GPU_ENV) $(SPBIN) > $(SPLOG) 2>&1; \
+		  rc=$$?; \
+		  cat $(SPLOG); \
+		  echo "[artifact] $(SPLOG)  $$(stat -c%s $(SPLOG)) bytes"; \
+		  exit $$rc; }; \
+	else \
+		echo "field-sparse: $(HIPCC) not found -- skipped"; \
+	fi
+
+# Exact quiet-term skipping (below half an ulp of the running drive), a
+# source-row two-stage layout, and batched per-step time. Both exactness
+# claims have controls that must break them. Exit 1: a check failed or a
+# control went undetected; exit 2: a timing ended on the cap.
+field-quiet: hip-header-check ## Quiet rows, source-row layout, batched step time (skipped without hipcc)
+	@if command -v $(HIPCC) >/dev/null 2>&1; then \
+		mkdir -p $(BUILD) && \
+		echo "$(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(QTBIN) $(QTSRC)" && \
+		$(GPU_ENV) $(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -o $(QTBIN) $(QTSRC) && \
+		{ $(GPU_ENV) $(QTBIN) > $(QTLOG) 2>&1; \
+		  rc=$$?; \
+		  cat $(QTLOG); \
+		  echo "[artifact] $(QTLOG)  $$(stat -c%s $(QTLOG)) bytes"; \
+		  exit $$rc; }; \
+	else \
+		echo "field-quiet: $(HIPCC) not found -- skipped"; \
 	fi
 
 # Needs NO GPU, no hipcc and no .venv -- that is the point. It is the only

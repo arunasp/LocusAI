@@ -81,6 +81,9 @@ class Plasticity:
         # Both EMPTY. Nothing is installed; see the module note.
         self.traces = {}
         self.weights = {}
+        # Outgoing targets per source, so a per-source pass visits only
+        # its own rows. Derived from `weights`, never set directly.
+        self._out = {}
         self.observations = 0
         self.consolidations = 0
 
@@ -113,6 +116,31 @@ class Plasticity:
         self.observations += 1
         return len(self.traces)
 
+    def observe_transition(self, before, after):
+        """Directional tags: (i -> j) for i active BEFORE and j AFTER.
+
+        Decays every tag, then adds pre * post for each ordered pair,
+        pre from ``before`` and post from ``after`` (both lists of
+        (unit, value)). Only the forward direction is tagged; this is the
+        pre-before-post ordering of spike-timing-dependent plasticity,
+        which `observe` cannot express because it pairs units active at
+        the same moment in both directions. A unit may follow itself.
+
+        Like `observe`, it never touches a weight.
+        """
+        decayed = {}
+        for key, tag in self.traces.items():
+            t = tag * self.trace_decay
+            if abs(t) > self.trace_floor:
+                decayed[key] = t
+        for i, pre in before:
+            for j, post in after:
+                key = (i, j)
+                decayed[key] = decayed.get(key, 0.0) + pre * post
+        self.traces = decayed
+        self.observations += 1
+        return len(self.traces)
+
     # ------------------------------------------------------------ slow --
     def consolidate(self, modulator):
         """Apply ``rate * tag * modulator`` to every tagged weight.
@@ -132,6 +160,8 @@ class Plasticity:
             dw = self.rate * tag * modulator
             if dw == 0.0:
                 continue
+            if key not in self.weights:
+                self._out.setdefault(key[0], set()).add(key[1])
             w = self.weights.get(key, 0.0) + dw
             if w > self.w_max:
                 w = self.w_max
@@ -164,6 +194,37 @@ class Plasticity:
             if factor == 1.0:
                 continue
             for i, w in pairs:
+                self.weights[(i, j)] = w * factor
+            rescaled += 1
+        return rescaled
+
+    def scale_sources(self, target_sum, sources=None):
+        """Homeostatic scaling per PRE-synaptic source: multiplicative, so
+        a source's outgoing weights keep their relative sizes while their
+        absolute sum becomes ``target_sum``. Candidate targets of one
+        source then compete for a fixed total, which is how a learned
+        association is favoured without a negative modulator ever
+        depressing it.
+
+        Slow-period only, like `scale_to`. ``sources`` restricts the pass
+        to those rows; None scales every source. Returns how many rows
+        were rescaled.
+        """
+        if target_sum <= 0.0:
+            raise ValueError("target_sum must be positive")
+        rows = self._out if sources is None else {
+            i: self._out[i] for i in set(sources) if i in self._out}
+        outgoing = {i: [(j, self.weights[(i, j)]) for j in targets]
+                    for i, targets in rows.items()}
+        rescaled = 0
+        for i, pairs in outgoing.items():
+            total = sum(abs(w) for _, w in pairs)
+            if total <= 0.0:
+                continue
+            factor = target_sum / total
+            if factor == 1.0:
+                continue
+            for j, w in pairs:
                 self.weights[(i, j)] = w * factor
             rescaled += 1
         return rescaled

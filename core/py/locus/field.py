@@ -150,13 +150,10 @@ class Field:
         # capacity and compression together, which falsified the
         # one-control design rather than being a tuning failure.
         #
-        # Areas change the arithmetic rather than the parameter.
-        # Competition is within an area, so an area compresses many
-        # states into few winners, while the field's repertoire is the
-        # COMBINATION of per-area winners and is therefore
-        # multiplicative in the number of areas. Compression is local
-        # and capacity is combinatorial, so they stop contending for
-        # one dial.
+        # Areas were proposed as a second control and measured not to
+        # be one: A areas divide each unit's inhibitory denominator by
+        # A, scaling beta down. Active share rose from 2.3% to 16.7%
+        # and the repertoire fell from 60 to 3 (see CHANGELOG.md).
         #
         # Default is a single area covering everything, which is
         # exactly the previous behaviour -- so this cannot silently

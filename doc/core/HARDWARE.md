@@ -180,7 +180,72 @@ hot/cold split has to work by SIZING a structure to stay resident, never by
 placing it. And **DRAM bandwidth cannot be derived from HIP on this
 platform**: `memoryBusWidth` 320 with `memoryClockRate` 1.25 GHz yields
 50 or 100 GB/s depending on how the field is read, against a real ~800 GB/s.
-The field is unreliable under GPU-PV; use the card's published figure.
+The field is unreliable under GPU-PV; bandwidth is measured instead
+(`make bandwidth`, below).
+
+## Bandwidth, measured
+
+`make bandwidth` (`core/gpu/exp_bandwidth.cpp`), WSL2 boot, 2026-09-22.
+Each figure sampled until stable; none ended on the cap. Two runs agree
+within 0.5% on every figure; the table gives the first.
+
+| path | GB/s | samples |
+|---|---|---|
+| device copy (read + write) | 627.3 | 9 |
+| host → device, pinned | 28.2 | 10 |
+| host → device, pageable | 13.0 | 11 |
+| device → host, pinned | 28.3 | 10 |
+
+B_IO / B_GPU is 0.045 pinned and 0.021 pageable. Streamed input stays
+hidden behind device work only while each input byte causes at least
+~22 bytes (pinned) or ~48 bytes (pageable) of device-memory traffic.
+
+## GPU hierarchy, measured
+
+`make gpu-cache` (`core/gpu/exp_gpu_cache.cpp`), same boot. Whole-GPU
+read bandwidth by working-set size; two runs, zero-filled and
+non-constant data, agree within 4% at every size from 4 MiB up.
+
+| working set | GB/s |
+|---|---|
+| 256 KiB – 2 MiB | not a cache figure (most threads idle) |
+| 4 – 8 MiB | 13,400 – 14,400 |
+| 16 MiB | ~7,100 |
+| 32 – 256 MiB | 2,000 – 3,100 |
+| ≥ 512 MiB (VRAM, read only) | 766 – 827 |
+| LDS, 64 KiB per block | 7,600 – 7,800 (lower bound) |
+
+- Ordering: on-chip > VRAM > host RAM over PCIe (28.2) > disk write (0.5).
+- The plateau edges do not match the documented sizes: the fastest
+  plateau reaches 8 MiB against a reported 6 MiB L2, and the drop to
+  VRAM rate falls between 256 and 512 MiB against an 80 MB Infinity
+  Cache. Unexplained; tiers are named here by measured working set.
+- The LDS figure is limited by occupancy at 64 KiB per block.
+
+## Host hierarchy, measured
+
+`make hierarchy` (`core/tests/exp_hierarchy.c`), same boot, one run.
+Single-threaded CPU figures; disk on the repo's filesystem (ext4 image
+on Windows).
+
+| level | GB/s |
+|---|---|
+| CPU read, 16 KiB – 512 KiB (L1 32 KiB, L2 1 MiB) | ~139 |
+| CPU read, 2 – 16 MiB (L3 32 MiB) | 125 – 132 |
+| CPU read, ≥ 128 MiB (DRAM) | ~44 |
+| CPU write, 1 GiB memset | 23.4 |
+| disk write, O_DIRECT + fsync | 0.5 |
+| disk read, O_DIRECT | not measured (see below) |
+
+- L1 and L2 are not resolved: the scalar read loop flattens at ~139 GB/s
+  before either limit.
+- The 16.0 GB/s O_DIRECT read is above the ~15.75 GB/s PCIe 5.0 x4 link
+  limit that caps a single NVMe drive, so the Windows host cache served
+  it; O_DIRECT inside WSL2 does not bypass that cache. A disk read figure
+  needs a file larger than host RAM or a native Linux boot. Whether the
+  0.5 GB/s write reached the drive is not established either.
+- For data consumed on the GPU, the host-RAM tier costs the PCIe rate
+  (28.2 GB/s pinned), not the DRAM rate.
 
 ## Fixed-function reuse
 

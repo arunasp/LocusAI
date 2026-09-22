@@ -120,10 +120,10 @@ class Cycle:
                   measured, the pair store is sparse at 0.05 and
                   saturates into a dense one below 0.02, at which point
                   the whole sparse argument is void.
-      beta        inhibition. The biological 1-2% active band sits
-                  between 0.1 and 0.5 here (participation ratio 2.93%
-                  down to 0.54%); above 2.0 it saturates and does
-                  nothing further.
+      beta        inhibition. Measured in one configuration per beta
+                  (`make operating-point`, n=64), the active share
+                  reaches the biological 1-2% band at beta >= 0.7;
+                  beta 0.5 leaves 10.9% active.
       bias_strength
                   peak magnitude of the derived bias. Kept well below
                   the evidence scale on purpose: a bias must steer, not
@@ -566,7 +566,7 @@ class Cycle:
                        n_fine=self.n, unstable=unstable)
 
     def drive_and_stack(self, evidence, window=None, max_levels=8,
-                        episodes=10, max_fast=120, stride=4,
+                        episodes=10, max_fast=120, stride=1,
                         outcome=1.0):
         """Build levels until a level REFUSES. Depth, compression and
         the local structure are all outputs; nothing here is a chosen
@@ -600,6 +600,9 @@ class Cycle:
         would have guarded. Each level's fan-out is REPORTED instead, so
         a reader sees the local situation rather than inheriting my
         number.
+
+        `stride` defaults to 1. At stride k, `survey` caps the chunk count
+        at n/k; the previous default of 4 pinned level-0 chunks at n/4.
 
         Stops for a reason it names, and the last record carries it.
         """

@@ -75,10 +75,9 @@ In code: `Cascade` grades `HOLD / ORIENT / PREPARE / COMMIT`.
 `commit_threshold()` and `required_signals()` both scale inversely with
 reversibility; orienting and preparing deliberately do not.
 
-**Not yet implemented.** Scaling a threshold is not sufficient on its
-own. Some action classes should be barred from the fast route at any
-evidence level — a categorical exclusion list alongside the continuous
-threshold.
+`Constitution.permits()` (`py/locus/constitution.py`) bars action
+classes categorically, alongside the continuous threshold. The veto sits
+outside `Cascade`.
 
 ## Learning is two mechanisms, not one
 
@@ -106,10 +105,38 @@ In code: `NoveltyGate` gates encoding on prediction error;
 `locus_reinforce()` *is* the tier-promotion call — repetition-count
 promotion and residency promotion are one mechanism.
 
-**Not yet implemented.** The trigger should be a recurring winner
-sequence with consistently small prediction error — the outcome having
-stopped being surprising — not raw repetition count. Repetition alone
-promotes things that are still surprising.
+`locus_reinforce()` promotes a trace only after `promote_after`
+consecutive re-applications whose prediction error is at or below
+`surprise_floor`; a surprising outcome resets the run.
+
+**Not yet implemented.** The run is counted per trace. A recurring
+sequence of winners across traces is not tracked.
+
+### Learning a byte stream, measured
+
+`make stream-learn` (`core/tests/exp_learn_stream.py`) learns next-byte
+structure from this repository's text with `observe_transition`,
+`consolidate` and `scale_sources`, and scores held-out files in bits per
+byte (54,969 predictions; figures belong to the tree they ran on,
+because the corpus is the repository).
+
+| learner | bits per byte |
+|---|---|
+| count reference, add-one | 3.284 |
+| normalised counts (control) | 2.276 |
+| surprise modulator, trace decay 0.7, rescale per file | 3.473 |
+| constant modulator, trace decay 0.7, rescale per file | 3.084 |
+| surprise modulator, no carry-over, rescale per file | 3.241 |
+| constant modulator, no carry-over, rescale per file | 2.804 |
+| constant modulator, no carry-over, one rescale, no cap | 2.276 |
+
+- The last learner equals the control exactly, on validation and test:
+  the rule computes normalised counts when its three differences are
+  removed.
+- Cost of each difference, between learners differing only in it: the
+  surprise modulator 0.39–0.44 bits, trace carry-over 0.23–0.28 bits,
+  per-file rescaling with the 5.0 weight cap 0.53 bits.
+- No learner beats the normalised-count control.
 
 ## Retrieval is spreading activation, not search
 
@@ -144,7 +171,9 @@ contract; the reasoning behind the parts that differ from a cache:
   `locus_restabilize()` must follow and may rewrite it. A trace never
   re-stabilised weakens rather than persisting unchanged.
   `locus_lookup()` does not destabilise — the instinct and procedural
-  routes cannot afford a reconsolidation cost.
+  routes cannot afford a reconsolidation cost. `locus_restabilize()`
+  returns `LOCUS_GATED` and discards the update when neuromodulatory
+  tone is too low.
 - **Capacity is interference, not bytes.** Working memory limits are
   competition-based (Cowan), so the active set is bounded by
   k-winners-take-all. Pinned traces are required residents and are
@@ -160,6 +189,40 @@ persistent activity or residual presynaptic facilitation (Fuster &
 Alexander; Mongillo, Barak & Tsodyks) — a state held up by ongoing
 energy expenditure, not stored bytes. It has to live where the compute
 does.
+
+## Kernel-row residency
+
+Design, not implemented. Applies to the `Field` kernel; the trace-store
+tiers above are unchanged.
+
+- The unit of residency is a kernel row: the outgoing weights of one
+  source unit. The drive reads row i only when unit i is above the floor,
+  so a row whose source is quiet is not read that tick.
+- Tiers: VRAM holds the field state and the rows of active and recently
+  active units; host RAM holds rows of dormant units; disk holds rows
+  unused for long. The field state never leaves VRAM.
+- Demotion is by ticks since the row was last read, counted by the
+  autonomic tick. VRAM capacity is the only limit: when a row must be
+  placed, the least recently read one moves down a tier.
+- Rows whose sources are rising below threshold are prefetched from host
+  RAM while the current tick computes.
+- Precision is identical in every tier. A row round-trips exactly, so
+  residency never changes the dynamics. This differs from the trace
+  store, where tiers hold transformed representations.
+- A row needed but not resident is fetched before the tick completes. A
+  miss costs time, never correctness.
+- Prerequisite: a sparse row layout with a compacted list of active
+  rows.
+- Quiet is defined exactly: a term below half an ulp of the target's
+  running drive leaves the fp32 sum unchanged, so skipping it is
+  bit-identical (`make field-quiet`); a row is quiet in a step when all
+  its terms are. Measured on the ring kernel at beta 1.0: no term and no
+  row was quiet in 300 driven steps at n up to 4096.
+- The sparse kernel costs about 60 bytes per unit (7 non-zeros × 8 bytes
+  plus a 4-byte offset), under 1 MiB at n = 16384, so residency tiers
+  are not needed until the kernel approaches VRAM capacity. A source-row
+  layout suited to tiering is exact but costs 1.48–1.50× per step; the
+  compute layout gathers by target until then.
 
 ## Autonomic processes and signal ownership
 
@@ -186,9 +249,8 @@ Otherwise the constrained layer is asked to grade its own need. By that
 rule `activation` is disqualified — it is writable from the pathway side
 via `locus_excite()` — while a tick-incremented lease age is not.
 
-**Not yet implemented.** The lease is currently absolute, with no
-preemption: if every slot is leased, `locus_put()` fails and encoding
-stops. A long-held or leaked lease is a deadlock with no reclaim path.
+Leases expire: a lease held longer than `cfg.lease_max_ticks` is
+revoked, freeing its slot (see `src/locus.h`).
 
 ## What the loop now does
 
@@ -214,38 +276,54 @@ behaviour belongs to one of them rather than to the wiring.
   alone changes nothing, which is what separates this from Hebbian
   learning. One modulator with a sign does both potentiation and
   depression, so suppression needs no separate rule.
+  `observe_transition` tags ordered pairs (pre before post) for
+  sequence learning; `scale_sources` rescales each source's outgoing
+  weights multiplicatively to a fixed sum, so a source's targets compete
+  without depression.
+- `py/locus/encode.py` — byte-stream input: byte units plus hashed
+  n-gram units, table sizes derived from the stream.
 - `py/locus/cycle.py` — the perceive-retrieve-decide-learn loop, closed.
   Settle, decide, learn from the SETTLED state, then derive the next
   bias. It adds no mechanism of its own.
 - `py/locus/trace_chain.py` — the level-coupling operator. A coarse
   level is DERIVED from a fine one, never stored, so there is no shared
   cell and no second writer.
+- `Cycle.level_up`, `survey_saturating` and `drive_and_stack` — the
+  hierarchy. `level_up` forms a coarse level from stable attractor
+  supports, with the coarse kernel derived by `trace_chain` over one
+  representative per support. `survey_saturating` drives the field until
+  the set of supports stops growing and reports the number of cues
+  consumed. `drive_and_stack` builds levels until one refuses. Depth and
+  compression are outputs, not parameters.
 
 ## Not implemented
 
 Beyond the gaps noted above:
 
-- Noise in the competition. The deterministic top-k is gone — `Field`
-  competes by graded shunting inhibition with no sorting anywhere — but
-  competition is still noiseless, and tonic/phasic neuromodulation does
-  not yet set its sharpness. `beta` is the only sharpness control, and
-  the 1–2% biological active band sits between 0.1 and 0.5 (measured by
-  participation ratio); above 2.0 it saturates and does nothing further.
-- A gate on re-stabilisation. Consolidation is neuromodulator-gated in
-  biology; here anything may currently re-stabilise. Note the three-
-  factor gate in `plasticity.py` is the same shape and could carry it.
+- Neuromodulated competition. `Field(noise=..., seed=...)` adds seeded
+  spontaneous activity to each unit's input after shunting inhibition.
+  Tonic/phasic neuromodulation does not set competition sharpness;
+  `beta` is the only sharpness control. Measured in one configuration
+  per beta (`make operating-point`, n=64): the active share reaches the
+  biological 1–2% band at beta ≥ 0.7, and beta 0.5 leaves 10.9% active.
 - Competition at two scales — features within a moment, and whole
   episodes against each other. Only one scale exists.
-- Per-area competition. A single global `active_k` lets one busy area
-  starve the rest.
-- Chunk formation. The state space cannot yet change: nothing forms a
-  new unit standing for a composite. This is the blocker for hierarchy
-  and therefore for summarising anything larger than one active set,
-  and it is blocked on an unanswered threshold question rather than on
-  code — a proposed stopping criterion was measured and found to have
-  no force.
-- Sensory encoding, motor output, sleep-phase consolidation, and the
-  pattern-separation stage that must precede completion.
+- A second competition control. `Field(areas=...)` implements local
+  inhibition, and it is not a second control: A areas divide each unit's
+  inhibitory denominator by A. Measured, the active share rose from 2.3%
+  to 16.7% and the repertoire fell from 60 to 3.
+- Compression. `level_up` chunks by attractor support. At biological
+  sparsity the repertoire is about n, so measured compression is about
+  1.0x (1.03x at beta 1.0, n=64). No beta gives biological sparsity, a
+  large repertoire and compression together. Earlier figures of 8.00x,
+  8.53x, 10.67x and 85.3x are retracted; see `CHANGELOG.md`. The
+  mechanism under design is a projection between pools of different
+  sizes.
+- Sensory encoding beyond text. Byte streams are encoded as byte units
+  plus hashed n-gram units (`py/locus/encode.py`), with table sizes
+  derived from the stream; no other modality is encoded. Motor output,
+  sleep-phase consolidation, and the pattern-separation stage that must
+  precede completion.
 - A language renderer. No English chain-of-thought, which the
   transparency requirement needs. Measured ceiling on what one could
   ever report: about 24 states carry real activation per tick while 4
@@ -268,5 +346,8 @@ not part of. Three candidate single-unit persistence mechanisms were
 ruled out before this was understood, all of them sharing the
 assumption that a node is what persists.
 
-One attractor captured 48 of those 64 basins, so capacity is currently
-about 11 distinguishable states. That is the next thing to measure.
+One attractor captured 48 of those 64 basins. The count of 11 is not a
+capacity figure: it depends on inhibition and on the number of
+injections. With `survey_saturating`, the measured repertoire is 15 of
+32, 52 of 64, 126 of 128 and 254 of 256 states, and saturation takes
+about 5.7 cues per repertoire member.

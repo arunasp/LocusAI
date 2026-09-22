@@ -33,6 +33,11 @@ come first because everything later builds on them.
 
 Depends on: nothing. All four are local to existing code.
 
+**Status:** lease expiry, Gumbel stochastic selection and gated
+re-stabilisation done 2026-08-10. Promotion is gated on a run of
+low-surprise re-applications per trace; the recurring winner-sequence
+form is open. See `CHANGELOG.md`.
+
 ## 2. Complete the competition model
 
 - **Two scales of competition.** Features within a moment, and whole
@@ -46,6 +51,10 @@ Depends on: nothing. All four are local to existing code.
 Depends on: stage 1's stochastic competition, since both change the same
 selection path.
 
+**Status:** per-area competition exists as `Field(areas=...)` and was
+measured not to act as a second control (see
+[ARCHITECTURE.md](ARCHITECTURE.md)). Two-scale competition is open.
+
 ## 3. Recurrence and completion
 
 - **A recurrent layer.** Everything currently in the substrate is
@@ -58,6 +67,10 @@ selection path.
 
 Depends on: stage 2. Episode-level competition is the separation stage's
 selection mechanism.
+
+**Status:** the recurrent layer exists as `py/locus/field.py`, closed
+into a loop by `py/locus/cycle.py`. Separation is open. Hierarchy and
+compression: [HIERARCHY.md](HIERARCHY.md).
 
 ## 4. Learning dynamics
 
@@ -75,6 +88,15 @@ selection mechanism.
 
 Depends on: stage 3. Replay-as-completion requires the completion
 mechanism to exist.
+
+**Status:** eligibility traces and the three-factor rule exist as
+`py/locus/plasticity.py`, with ordered (pre before post) tags and
+per-source scaling. On this repository's text the rule learns next-byte
+structure and reproduces normalised counts exactly when its surprise
+modulator, trace carry-over and per-file rescaling are removed; with
+one or more of them it scores 0.53–1.20 bits per byte worse (`ARCHITECTURE.md`,
+Learning a byte stream). Structural plasticity and the sleep phase are
+open.
 
 Open question, unresolved: whether episodic and procedural replay share
 one buffer or need two. They want different sampling criteria — diverse

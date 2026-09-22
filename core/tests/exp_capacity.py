@@ -236,9 +236,8 @@ def main():
                  r["no_support"], flag))
     status, detail = wd.param_has_effect([float(c) for c in by_beta])
     print("  [%s] param_has_effect(beta): %s" % (status, detail))
-    print("  NOTE: an earlier sparsity measurement put the biological")
-    print("  1-2%% active band at beta 0.1-0.5. Capacity disagrees, so")
-    print("  the two criteria need reconciling rather than one winning.")
+    print("  NOTE: `make operating-point` measures sparsity in the same")
+    print("  configuration: the 1-2% active band is at beta >= 0.7.")
 
     print()
     print("=== 3. does kernel STRUCTURE move it? (n=64, beta=0.3) ===")

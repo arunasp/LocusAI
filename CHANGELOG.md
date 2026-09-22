@@ -8,6 +8,39 @@ versions, since nothing is released yet.
 
 ### Added
 
+- `core/py/locus/encode.py` — byte-stream sensory encoding: 256 byte
+  units plus hashed n-gram units (orders 2–4, two heads), Engram-style.
+  Table sizes are derived from the stream (smallest prime at or above the
+  distinct n-gram count, a distinct prime per head); per-head and joint
+  collisions are measured. Eight tests in `core/tests/test_encode.py`.
+- `core/tests/exp_stream.py` (`make -C core stream`, repo root mounted):
+  the repository's own text as real input, with a reference next-byte
+  score. On LocusAI (79 training files, 705 KB; 8 held out, 55 KB):
+  250,196 units; 2 of 35,711 trigrams and 6 of 82,911 4-grams share all
+  slots; reference 3.633 bits per byte from byte context, 3.270 with
+  n-gram units.
+- `Plasticity.observe_transition` (ordered pre-before-post tags) and
+  `Plasticity.scale_sources` (multiplicative per-source scaling, visiting
+  only the listed rows through an outgoing-target index). Eight tests in
+  `core/tests/test_plasticity_transition.py`; two fail if tags are made
+  symmetric.
+- `core/tests/exp_learn_stream.py` (`make stream-learn`, minutes; run
+  detached): three-factor learning of next-byte structure from the
+  repository's text, with a normalised-count control and an ablation.
+  Held-out test: count reference 3.284 bits per byte, control 2.276;
+  learner with surprise modulator, trace decay 0.7 and per-file rescaling
+  3.473. A learner without those three choices and without the weight
+  cap scores 2.276, equal to the control on validation and test. Costs:
+  surprise 0.39–0.44, carry-over 0.23–0.28, per-file rescaling with the
+  cap 0.53 bits. Recorded in `doc/core/ARCHITECTURE.md`.
+- `doc/core/HIERARCHY.md` — design for compression by projection between
+  pools of different sizes; within-pool recurrence at level 0 only. Not
+  implemented.
+  Its five design decisions are recorded, with candidate IO and memory
+  optimisations drawn from the DeepSeek-V4.1-Flash report.
+- Kernel-row residency design in `doc/core/ARCHITECTURE.md`: rows tiered
+  across VRAM, host RAM and disk by ticks since last read, prefetched
+  ahead of need, identical precision in every tier. Not implemented.
 - `Cycle.level_up`, `survey`, `survey_driven`, `survey_saturating` and
   `drive_and_stack` — hierarchy from attractor supports, with the coarse
   kernel derived by trace chain over one representative per chunk. Depth
@@ -137,6 +170,57 @@ versions, since nothing is released yet.
 
 ### Measured
 
+- Device and host↔device bandwidth on `gfx1100` under WSL2, with
+  `core/gpu/exp_bandwidth.cpp` and `make bandwidth`: device copy 627.3
+  GB/s, host→device 28.2 GB/s pinned and 13.0 GB/s pageable, so
+  B_IO / B_GPU is 0.045 pinned. Each figure is sampled until stable and
+  reports whether it ended on the cap. Recorded in `doc/core/HARDWARE.md`.
+  A second run agreed within 0.5% on every figure.
+- `core/tests/exp_hierarchy.c` (`make hierarchy`): host side, one thread.
+  CPU read ~139 GB/s in L1/L2 (not resolved by the scalar loop), 125–132
+  in L3, ~44 from DRAM; memset 23.4; O_DIRECT disk write 0.5. The 16.0
+  GB/s O_DIRECT read was served by the Windows host cache and is not a
+  disk figure. Recorded in `doc/core/HARDWARE.md`.
+- `core/gpu/exp_gpu_cache.cpp` (`make gpu-cache`): whole-GPU read sweep.
+  13.4–14.4 TB/s at 4–8 MiB, 2.0–3.1 TB/s at 32–256 MiB, 766–827 GB/s
+  from 512 MiB (VRAM); LDS 7.6–7.8 TB/s as a lower bound. Zero-filled and
+  non-constant runs agree within 4% from 4 MiB up, so compression of
+  uniform data is ruled out. Plateau edges do not match the documented L2
+  and Infinity Cache sizes; left unexplained.
+- `core/tests/exp_singlepass.py` (`make singlepass`): per-area inhibition
+  sums carried from the previous step's write match the reference update
+  — 0/180 settled supports changed, 140/180 trajectories bit-identical,
+  the rest within 8.9e-16. A one-step lag, the negative control, changed
+  91/180 supports.
+- `core/tests/exp_precision.py` (`make precision`): FP8 E4M3 kernel
+  weights keep 83–100% of cues in their basin; block-scaled FP4 keeps
+  73–94% at beta ≥ 1.0 and 47% on the random kernel at n=64, beta 0.3.
+  No settle ended on its budget.
+- `core/gpu/exp_field_step.cpp` (`make field-step`): `Field.step` on
+  gfx1100. Carried per-block inhibition partials are bit-identical to a
+  separate reduce launch (6/6; lagged control differs 6/6); fp32 matches a
+  double-precision replica's support (6/6). No launch saving shown. The
+  dense update is not bandwidth-bound: n² · w / time, an upper bound on
+  bytes read, stays at or below 97 GB/s of 627. FP8 via a lookup table
+  is 4–12% slower than fp32 in both runs; an earlier note withdrawing
+  that on the grounds of a drifting active-row count is not supported by
+  `make field-sparse`, where every unit stays above the floor. One n=4096
+  timing moved 28% between two runs that each reported stable, so device
+  timings are recorded only where repeated runs agree. Details in
+  `doc/core/HIERARCHY.md`.
+- `core/gpu/exp_field_sparse.cpp` (`make field-sparse`): gather-by-target
+  sparse kernel. Trajectories bit-identical to dense (6/6); a
+  descending-order control differs (6/6). From fixed states with all n
+  rows above the floor, dense takes 0.35–4.45 ms per step for n = 1024 to
+  16384 and sparse 0.014–0.045 ms, at the launch latency floor: at least
+  7.6× to 98× faster. Two runs.
+- `core/gpu/exp_field_quiet.cpp` (`make field-quiet`), no FMA
+  contraction. Skipping terms below half an ulp of the running drive is
+  bit-identical (6/6; a 2-ulp control differs 1/6). On the ring kernel at
+  beta 1.0, 0 of 11,289,600 term visits were below half an ulp and no row
+  was ever quiet. A source-row two-stage layout is bit-identical to
+  gather (6/6) at 1.48–1.50× the cost. Batched gather steps take
+  6.35–9.77 µs for n = 1024 to 16384. Two runs.
 - Full memory hierarchy on `gfx1100`, recorded in `doc/core/HARDWARE.md`.
   The design-relevant result: **32.25 MiB of vector registers against 6 MiB
   of L2**, so the innermost tier is five times the one outside it and "spill
@@ -232,6 +316,22 @@ same object — a field at maximum capacity has nothing left to compress.
 
 ### Fixed
 
+- `core/Makefile` included both `../cicd-common.mk` and
+  `/etc/cicd-common.mk` whenever both were visible, redefining `help`.
+  A worker mounting only `core/` never sees the first, which hid it; one
+  mounting the repo root, as `stream` needs, sees both. Now guarded as in
+  the root Makefile: the image copy wins, the vendored one is the
+  fallback. Checked from a repo-root worker, a core-only worker and the
+  GPU container.
+- `Cycle.drive_and_stack` defaulted to `stride=4`, capping level-0
+  chunks at n/4 (6 of 24 at stride 4 against 19 at stride 1, same
+  kernel). Default is now 1, with a test that fails on the old default.
+  `doc/core/ARCHITECTURE.md` and three stale code comments now carry the
+  retractions above.
+- `doc/core/ARCHITECTURE.md` still listed the categorical exclusion,
+  lease expiry and the re-stabilisation gate as not implemented;
+  `doc/core/ROADMAP.md` still listed stages 1–4 as not started. Both now
+  state what exists.
 - Lease expiry, stochastic selection, surprise-gated promotion and the
   re-stabilisation gate — the four corrections in roadmap stage 1. Absolute
   leases had made a full store stop accepting traces with no reclaim path.
