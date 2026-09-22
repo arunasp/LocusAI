@@ -40,7 +40,8 @@
     do {                                                                  \
         hipError_t e_ = (x);                                              \
         if (e_ != hipSuccess) {                                           \
-            std::fprintf(stderr, "FAIL: %s: %s\n", #x,                    \
+            std::fprintf(stderr, "FAIL: %s:%d: %s: %s\n", __FILE__,  \
+                         __LINE__, #x,                                \
                          hipGetErrorString(e_));                          \
             std::exit(1);                                                 \
         }                                                                 \
@@ -158,6 +159,23 @@ static const int C = 256;
 // out of this; it does not change any result, only how the same work
 // is divided across launches.
 static const int64_t LEARN_SPAN = 1 << 20;
+
+// Events per batch. Free VRAM is an UPPER BOUND, not a target: sizing a
+// batch to fill it drove the card to 19.1 GB of 20 with the desktop
+// starved, which is the failure this batching exists to prevent, and
+// the huge grids that came with it failed a launch outright. This cap
+// keeps one batch near 1.2 GB of buffers (18 B per event) whatever the
+// card reports free; the free-memory check still lowers it further on a
+// busy card.
+static const int64_t MAX_BATCH_EVENTS = 64 << 20;
+
+// Blocks per `score` launch. One block scores one position, so a whole
+// corpus wants tens of millions of blocks. grid.x allows that, but the
+// dispatch counts WORK ITEMS in 32 bits: 47,327,946 blocks x 256
+// threads is 12.1e9 against a 4.29e9 ceiling, and the launch is
+// rejected as an invalid configuration. 4M blocks is 1.07e9 work
+// items, comfortably inside it, and bounds the launch's duration too.
+static const int64_t SCORE_BLOCKS = 4 << 20;
 
 // Events each unit has already seen, so the metaplastic 1/n keeps
 // counting across batches.
@@ -447,6 +465,7 @@ static double *store(const Enc &e, const uint8_t *dd, const int64_t *dfs,
     int64_t per_event = 4 + 4 + 1 + 1 + 8;
     int64_t max_events = std::max<int64_t>(
         1 << 20, (int64_t)(usable / (size_t)per_event));
+    max_events = std::min<int64_t>(max_events, MAX_BATCH_EVENTS);
     int64_t batch = std::max<int64_t>(1, max_events / K);
     if (n && batch < n)
         std::fprintf(stderr,
@@ -749,10 +768,13 @@ int main(int argc, char **argv)
     double *dn, *dp, *dl, *dout;
     CHECK(hipMalloc(&dn, std::max<int64_t>(1, P) * 8));
     CHECK(hipMalloc(&dp, std::max<int64_t>(1, P) * 8));
-    if (P) {
-        score<<<P, B>>>(e, dsc, dsfs, nfs, dpos, kind, gated ? 1 : 0, Wc,
-                        Wh, cnt, tot, dn, dp);
+    for (int64_t q0 = 0; q0 < P; q0 += SCORE_BLOCKS) {
+        int64_t qn = std::min<int64_t>(SCORE_BLOCKS, P - q0);
+        score<<<qn, B>>>(e, dsc, dsfs, nfs, dpos + q0, kind,
+                         gated ? 1 : 0, Wc, Wh, cnt, tot, dn + q0,
+                         dp + q0);
         CHECK(hipGetLastError());
+        CHECK(hipDeviceSynchronize());
     }
     dl = up(lam);
     CHECK(hipMalloc(&dout, nl * 8));
