@@ -67,3 +67,8 @@ tools/desktop-extension/node_modules/
 # Local Bash proxy) and a broken/empty backup tarball, 2026-08-07.
 # Neither should ever reach a commit.
 logs/
+
+# Commit messages staged for `make commit-verified`. In the tree and
+# ignored, rather than hidden inside .git/ -- which is undeclared and
+# breaks in a worktree, where .git is a file.
+/.locus/

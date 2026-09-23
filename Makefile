@@ -97,12 +97,20 @@ $(WHEELHOUSE)/.stamp: $(REQS)
 wheels: $(WHEELHOUSE)/.stamp ## Populate an offline wheelhouse from requirements
 
 # --- delivery -------------------------------------------------------------
-# cicd/gitops.py: each step is one call with its checks built in. Commit
-# messages come from a file; keep it under .git/ so writing it never dirties
-# the tree. Verified against clean, dirty, no-op and failure scenarios by
-# `make gitops-verify` (throwaway repos, nothing here is touched).
+# cicd/gitops.py: each step is one call with its checks built in. Verified
+# against clean, dirty, no-op and failure scenarios by `make gitops-verify`
+# (throwaway repos, nothing here is touched).
+#
+# COMMIT MESSAGES LIVE IN AN IGNORED WORKING DIRECTORY, not under .git/.
+# Hiding a file inside git's own directory is .gitignore's job done in the
+# wrong place: it is undeclared, invisible to anyone reading the repo, and
+# it BREAKS OUTRIGHT in a linked worktree or submodule, where `.git` is a
+# FILE containing a gitdir: line -- `mkdir .git` fails there, so the path
+# cannot be created at all. `.locus/` is declared in .gitignore, so writing
+# a message still never dirties the tree, and the mechanism is visible
+# where people look for it.
 GITOPS ?= $(PYTHON3) cicd/gitops.py
-MSG    ?= .git/locus-msg.txt
+MSG    ?= .locus/commit-msg.txt
 
 # NAMED FILE SETS. The same lists were being typed by hand on every
 # commit -- four times in one session for the babble set alone -- and a
@@ -140,6 +148,7 @@ gitops-verify: ## Verify gitops.py against throwaway repos (23 scenarios)
 commit-verified: ## Pipeline, then stage exactly FILES or GROUP=<name> and commit
 	$(if $(RESOLVED),,$(error commit-verified: give FILES= or GROUP=; \
 	  `make groups` lists the names))
+	@mkdir -p $(dir $(MSG))
 	@$(GITOPS) commit-verified --msg $(MSG) -- $(RESOLVED)
 
 # DESTROYS per-commit history on the current branch. The surviving copy is
