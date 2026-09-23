@@ -72,6 +72,55 @@ MUTATIONS = [
      "        if False:\n            return False, 0.0",
      ["test_locus"]),
 
+    ("a forbidden act is refused at any evidence level",
+     "py/locus/constitution.py",
+     "    def permits(self, action_class):",
+     "    def permits(self, action_class):\n        return True",
+     ["test_locus", "test_constitution_wiring", "test_assemble"]),
+
+    ("an unnamed action class costs the MOST, not the least",
+     "py/locus/constitution.py",
+     "UNCLASSIFIED_REVERSIBILITY = 0.05",
+     "UNCLASSIFIED_REVERSIBILITY = 1.0",
+     ["test_locus", "test_constitution_wiring"]),
+
+    ("the audited layer is handed a COPY of the trace",
+     "py/locus/decisions.py",
+     "        return tuple(self._records)",
+     "        return self._records",
+     ["test_constitution_wiring"]),
+
+    ("a values file with an unknown key is refused, not ignored",
+     "py/locus/assemble.py",
+     "    if unknown:",
+     "    if False:",
+     ["test_assemble"]),
+
+    # The ZERO-modulator case is held TWICE -- by the early return and,
+    # independently, by dw = rate * tag * 0.0 -- so mutating either alone
+    # leaves the property standing. The substantive claim is that the
+    # modulator carries the magnitude and the sign at all.
+    ("three-factor: the modulator carries magnitude and sign",
+     "py/locus/plasticity.py",
+     "            dw = self.rate * tag * modulator",
+     "            dw = self.rate * tag",
+     ["test_plasticity", "test_cycle"]),
+
+    ("promotion needs a winner set that RECURRED (C)",
+     "src/store.c",
+     "            && signature_recurred(s, active_signature(s)))",
+     "            && 1)",
+     ["c"]),
+
+    # Mutating only the direct-direction test leaves the SYMMETRIC loop
+    # below it, which still catches a declared pair -- so the choke point
+    # is the function's own answer.
+    ("incompatible classes may not be co-active, room or not (C)",
+     "src/store.c",
+     "    if (klass >= LOCUS_CLASS_MAX)\n        return 0;",
+     "    if (1)\n        return 0;",
+     ["c"]),
+
     ("the constitution's costs cannot be reached from outside",
      "py/locus/constitution.py",
      "        self._costs = types.MappingProxyType(costs)",
@@ -81,6 +130,17 @@ MUTATIONS = [
 
 
 def run(tests):
+    """True when the selection is GREEN. "c" runs the C suite, which
+    has to be rebuilt first or it tests the previous binary -- a
+    mutation of a .c file is invisible until it is compiled."""
+    if tests == ["c"]:
+        build = subprocess.run(["make", "build"], cwd=CORE,
+                               capture_output=True, text=True)
+        if build.returncode != 0:
+            return False      # a mutation that will not compile is caught
+        r = subprocess.run([os.path.join(CORE, "build", "test_store")],
+                           cwd=CORE, capture_output=True, text=True)
+        return r.returncode == 0
     r = subprocess.run([PY, "-m", "unittest"] + tests,
                        cwd=TESTS, capture_output=True, text=True)
     return r.returncode == 0
