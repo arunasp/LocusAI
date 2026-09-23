@@ -233,6 +233,39 @@ static void test_lease_blocks_eviction(void)
 /* doc/core/ROADMAP.md stage 1: repetition alone promotes things that are
  * still surprising. What should promote is a recurring WINNER SEQUENCE
  * with consistently small prediction error. */
+/* Every double crossing the C API comes from a caller. A NaN that lands
+ * in activation or heat is unrecoverable and silent -- comparisons
+ * against it are all false, so the trace neither wins nor loses
+ * selection predictably, and the store is persistent state. */
+static void test_a_non_finite_input_is_refused_at_every_entry(void)
+{
+    LocusConfig cfg = locus_config_default();
+    cfg.capacity = 8;
+    LocusStore *s = locus_store_create(&cfg);
+    double nan_v = 0.0 / 0.0, inf_v = 1.0 / 0.0;
+
+    ok(locus_put(s, 1, LOCUS_PATH_DECLARATIVE, "a", 1, nan_v) < 0,
+       "put accepted a NaN salience");
+    ok(locus_put(s, 1, LOCUS_PATH_DECLARATIVE, "a", 1, inf_v) < 0,
+       "put accepted an infinite salience");
+    ok(locus_put(s, 1, LOCUS_PATH_DECLARATIVE, "a", 1, 0.5) == 0,
+       "put refused an ordinary salience");
+
+    ok(locus_excite(s, 1, nan_v) < 0, "excite accepted a NaN");
+    ok(locus_excite(s, 1, inf_v) < 0, "excite accepted an infinity");
+    ok(locus_trace_activation(s, 1) == locus_trace_activation(s, 1),
+       "activation was poisoned by a refused call");
+
+    ok(locus_reinforce(s, 1, nan_v) < 0, "reinforce accepted a NaN");
+    /* note_salient returns void: the check is that nothing moved. */
+    double before = locus_trace_activation(s, 1);
+    locus_note_salient(s, 1, nan_v);
+    ok(locus_trace_activation(s, 1) == before,
+       "a NaN strength changed the trace");
+
+    locus_store_destroy(s);
+}
+
 static void test_promotion_needs_a_recurring_winner_set(void)
 {
     LocusConfig cfg = locus_config_default();
@@ -506,6 +539,7 @@ int main(void)
     test_tagging_and_capture();
     test_prefetch_advisory();
     test_lease_blocks_eviction();
+    test_a_non_finite_input_is_refused_at_every_entry();
     test_promotion_needs_a_recurring_winner_set();
     test_kwta_respects_incompatibility();
     test_kwta_primitive();

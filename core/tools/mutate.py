@@ -158,6 +158,12 @@ MUTATIONS = [
      "    return (max(drive.get(b, 0.0), 0.0) + lam / 255) / (pos + lam)",
      ["test_learn"]),
 
+    ("the C API refuses a non-finite input at every entry (C)",
+     "src/store.c",
+     "    return !isnan(v) && !isinf(v);",
+     "    return 1;",
+     ["c"]),
+
     ("the constitution's costs cannot be reached from outside",
      "py/locus/constitution.py",
      "        self._costs = types.MappingProxyType(costs)",

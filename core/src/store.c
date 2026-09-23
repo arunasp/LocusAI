@@ -8,6 +8,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Every double below crosses into the store from a CALLER. A NaN that
+ * gets in is unrecoverable and silent: it lands in activation or heat,
+ * every comparison against it is false, so the trace neither wins nor
+ * loses selection predictably, and the store is persistent state. The
+ * existing `strength <= 0.0` guard did NOT catch it -- NaN fails that
+ * test too -- which is why this is a check of its own rather than a
+ * range test doing double duty. */
+static int usable(double v)
+{
+    return !isnan(v) && !isinf(v);
+}
+
 /* Ticks a retrieved trace may stay labile before it is counted as lost. */
 #define LOCUS_LABILE_TICKS 2
 
@@ -246,7 +258,7 @@ void locus_store_destroy(LocusStore *s)
 int locus_put(LocusStore *s, LocusKey key, LocusPathway path,
               const void *data, size_t len, double salience)
 {
-    if (!s || (!data && len))
+    if (!s || (!data && len) || !usable(salience))
         return -1;
 
     int i = find(s, key);
@@ -413,7 +425,7 @@ int locus_prefetch(LocusStore *s, const LocusKey *keys, size_t n)
 
 void locus_note_salient(LocusStore *s, LocusKey key, double strength)
 {
-    if (!s || strength <= 0.0)
+    if (!s || !usable(strength) || strength <= 0.0)
         return;
 
     /* Phasic tone: the same salience signal that rescues weak traces also
@@ -444,7 +456,7 @@ void locus_note_salient(LocusStore *s, LocusKey key, double strength)
 
 int locus_reinforce(LocusStore *s, LocusKey key, double surprise)
 {
-    if (!s)
+    if (!s || !usable(surprise))
         return -1;
     int i = find(s, key);
     if (i < 0)
@@ -483,7 +495,7 @@ int locus_reinforce(LocusStore *s, LocusKey key, double surprise)
 
 int locus_excite(LocusStore *s, LocusKey key, double amount)
 {
-    if (!s)
+    if (!s || !usable(amount))
         return -1;
     int i = find(s, key);
     if (i < 0)
