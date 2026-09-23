@@ -1,7 +1,7 @@
 """Self-training on the device: does babble earn its place in the corpus?
 
   exp_selftrain_gpu.py STORE CORPUS BINARY [--babble-bytes N]
-                       [--seeds K] [--salt S] [--jobs J]
+                       [--seeds K] [--salt S]
 
 The CPU version (exp_selftrain.py) takes a trained store and reads a
 little more into it. That is the biologically faithful shape -- an
@@ -17,11 +17,12 @@ rather than a rounding error.
 
 WHAT IS ON WHICH PROCESSOR, AND WHY:
 
-  babble generation -- CPU, and unavoidably serial along the sequence,
-  since each byte conditions on the one before it. Nothing about that
-  parallelises. But SEEDS are independent, so K seeds run on K cores at
-  the wall-clock cost of one, which is also how this gets an error bar
-  instead of a single number.
+  babble generation -- DEVICE, through tools/babble_gpu.py. The
+  sequence is serial per stream, since each byte conditions on the one
+  before it, but seeds are independent and become the BATCH DIMENSION:
+  S streams advance per launch. This ran on K cores until that kernel
+  existed, and the seed count was then limited by what a core could
+  afford rather than by what the error bar needed.
 
   training and scoring -- device, one invocation per arm through the
   same `device_run` that builds every store in this project. The arms
@@ -32,12 +33,24 @@ REPORTED AS MEAN AND SPREAD ACROSS SEEDS. One seed is an anecdote: the
 first CPU run showed self +0.001290 with no way to say whether that was
 the babble or the sampler's luck.
 
+MEASURED, and the question is now answered rather than posed.
+ts-2002, 1 MB of babble at 1.21% of train, 8 seeds:
+
+  baseline  1.821737
+  self      1.824394 +/- 0.000009   (+0.002657)
+  control   -0.000059
+
+The spread is 295x below the effect, and an equal quantity of REAL
+held-out text costs 45x less than the store's own output -- so this is
+the babble, not the sampler, and not "any further reading hurts".
+ts-32 at 2.59%: +0.007105 +/- 0.000147 against control -0.001024.
+Harmful at every scale tested, scaling with the babble's share.
+
 Nothing writes to STORE; it is read to generate, and the arms build
 their own stores in a temporary directory.
 """
 
 import os
-import random
 import shutil
 import sys
 import tempfile
@@ -46,23 +59,13 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "py"))
 
-from locus.knowledge import Knowledge          # noqa: E402
 from locus.encode import NgramEncoder, repo_files   # noqa: E402
-import exp_babble as B                         # noqa: E402
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
 import babble_gpu as BG                        # noqa: E402
 import exp_learn_gpu as G                      # noqa: E402
 import exp_learn_stream as X                   # noqa: E402
 
 LEARNER = "cls, neocortex also metaplastic (1/n)"
-
-
-def one_babble(args):
-    """`count` bytes from `store` at `seed`. Its own process."""
-    store, count, seed = args
-    know = Knowledge(store)
-    return B.babble(know, count, b"Once upon a time",
-                    random.Random(seed))
 
 
 def run_arm(binary, enc, train, val, test, extra):
@@ -91,7 +94,7 @@ def main(argv):
         print(__doc__)
         return 2
     store, corpus, binary, rest = argv[0], argv[1], argv[2], argv[3:]
-    count, seeds, salt, jobs = 1 << 20, 4, "", 0
+    count, seeds, salt = 1 << 20, 4, ""
     while rest:
         if rest[0] == "--babble-bytes" and len(rest) > 1:
             count, rest = int(rest[1]), rest[2:]
@@ -99,12 +102,9 @@ def main(argv):
             seeds, rest = int(rest[1]), rest[2:]
         elif rest[0] == "--salt" and len(rest) > 1:
             salt, rest = rest[1], rest[2:]
-        elif rest[0] == "--jobs" and len(rest) > 1:
-            jobs, rest = int(rest[1]), rest[2:]
         else:
             print("unknown argument: %s" % rest[0])
             return 2
-    jobs = jobs or min(seeds, os.cpu_count() or 1)
 
     parts = {"train": [], "val": [], "test": []}
     for path, data in repo_files(corpus):

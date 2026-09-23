@@ -21,10 +21,20 @@ which is genuinely new information, so it is the upper bound on what
 any equal quantity of reading could buy -- and the self arm brings no
 new information by construction, since it came out of the store.
 
-The prediction worth writing down BEFORE running it: self should be
-somewhere between neutral and harmful on bpb, because sampling then
-learning re-weights the store toward what it already favours. If self
-helps, that is a real finding and wants explaining, not celebrating.
+PREDICTED BEFORE RUNNING, kept because a prediction is only worth
+something beside what happened: self should be neutral to harmful,
+because sampling then learning re-weights the store toward what it
+already favours and no information enters.
+
+MEASURED: harmful at every scale. ts-32 +0.001290 against a control of
++0.000065; ts-512 +0.000073 against +0.000000. The device version
+(exp_selftrain_gpu.py) settles it with a spread -- ts-2002 +0.002657
++/- 0.000009 across 8 seeds, control -0.000059.
+
+SO BABBLE IS AN INSTRUMENT, NOT A TRAINING SOURCE. It measures what
+the store can produce (exp_babble.py); feeding it back costs
+prediction accuracy. Any stage that wants a practice stream has to
+get it from the environment.
 
 Nothing is written to the original store: each arm loads its own copy.
 """
