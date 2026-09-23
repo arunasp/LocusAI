@@ -117,6 +117,37 @@ def cpu_stream(know, seed_text, steps, rng_seed):
     return bytes(buf[len(seed_text):])
 
 
+def generate(store_path, binary, streams, steps, seed_text=b"Once upon",
+             know=None, workdir="/tmp"):
+    """`streams` babble streams from `store_path`, generated on device.
+
+    The importable form of what main() does, so an experiment does not
+    have to shell out and re-parse its own output. Seeds are 1..streams,
+    matching the CPU babbler's convention, so a stream generated here
+    and one generated there are the same stream.
+    """
+    know = know or Knowledge(store_path)
+    seeds = [1 + i for i in range(streams)]
+    blob = pack(know, streams, seed_text, steps, seeds)
+    inp = os.path.join(workdir, "babgen.in")
+    res = os.path.join(workdir, "babgen.bin")
+    with open(inp, "wb") as fh:
+        fh.write(blob)
+    try:
+        r = subprocess.run([binary, inp, res], capture_output=True,
+                           text=True)
+        if r.returncode != 0:
+            raise SystemExit("FAIL: %s exited %d: %s"
+                             % (binary, r.returncode, r.stderr))
+        with open(res, "rb") as fh:
+            data = fh.read()
+    finally:
+        for path in (inp, res):
+            if os.path.exists(path):
+                os.unlink(path)
+    return [data[i * steps:(i + 1) * steps] for i in range(streams)]
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)

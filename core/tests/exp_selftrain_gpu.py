@@ -41,7 +41,7 @@ import random
 import shutil
 import sys
 import tempfile
-from multiprocessing import Pool
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "py"))
@@ -49,6 +49,8 @@ sys.path.insert(0, os.path.join(HERE, "..", "py"))
 from locus.knowledge import Knowledge          # noqa: E402
 from locus.encode import NgramEncoder, repo_files   # noqa: E402
 import exp_babble as B                         # noqa: E402
+sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+import babble_gpu as BG                        # noqa: E402
 import exp_learn_gpu as G                      # noqa: E402
 import exp_learn_stream as X                   # noqa: E402
 
@@ -113,14 +115,22 @@ def main(argv):
           % (corpus, len(parts["train"]), train_bytes))
     print("babble    %d bytes x %d seeds (%.2f%% of train each)"
           % (count, seeds, 100.0 * count / max(1, train_bytes)))
-    print("cores     %d for generation, device serialised for the arms"
-          % jobs)
+    print("where     generation and the arms both on the device; "
+          "the arms are serialised so they cannot contend for one "
+          "GPU context")
     print()
 
-    with Pool(jobs) as pool:
-        babbles = pool.map(one_babble,
-                           [(store, count, s) for s in range(1, seeds + 1)])
-    print("generated %s bytes" % ", ".join(str(len(b)) for b in babbles))
+    # GENERATION IS ON THE DEVICE TOO (tools/babble_gpu.py, verified
+    # byte-for-byte against the CPU babbler). It used to be K processes
+    # on K cores while the GPU sat idle for minutes; at 787,659 bytes/s
+    # the whole set is seconds, so the seed count is now chosen for the
+    # error bar rather than for what a core could afford.
+    t0 = time.time()
+    babbles = BG.generate(store, os.path.join(os.path.dirname(binary),
+                                              "babble_device"),
+                          seeds, count, b"Once upon a time")
+    print("generated %d streams x %d bytes on the device in %.1f s"
+          % (len(babbles), count, time.time() - t0))
 
     # Equal quantity of REAL text the store has not read, cut out of the
     # scored set so no arm can memorise part of its own exam.
