@@ -215,12 +215,26 @@ which is the arrangement this design exists to avoid.
 
 ## Not implemented
 
-None of this is in the code yet. Present state:
+Present state:
 
-- `Cascade` takes reversibility as a caller-supplied argument; nothing
-  produces it.
+- DONE. `Constitution` (`py/locus/constitution.py`) supplies an act's
+  reversibility from its DECLARED CLASS, and `Dispatcher` takes one:
+  a releaser registered with a class gets its cost from the
+  constitution rather than from the caller, and an unnamed class costs
+  the most, not the least.
 - `enforce_kwta()` bounds the active set by activation alone; there is no
   notion of class or of incompatibility.
 - `AssociativeGraph.link()` is public and unconstrained.
-- There is no trace of decisions, so nothing can be audited or rendered.
-- There is no hard set, and no ingest of any kind.
+- DONE. `DecisionTrace` (`py/locus/decisions.py`) records every
+  dispatch, refusals included, and renders them for a person. The
+  records are frozen and handed out as a copy, so the audited layer
+  cannot edit its own record, and NOTHING reads the trace to learn:
+  a veto never reaches the learning channel, which is what stops the
+  system learning to avoid triggering the veto rather than to comply.
+  Its veto RATE is the health metric.
+- DONE for the hard set: `Constitution`'s categorical set is fixed at
+  construction, exposed read-only, refuses before any pathway runs, and
+  cannot carry a cost (construction fails if an act is both forbidden
+  and priced, since a price invites the reading that evidence buys it).
+  INGEST is still open: the costs and the set are passed in by whoever
+  builds the Constitution.
