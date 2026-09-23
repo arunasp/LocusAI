@@ -20,6 +20,8 @@ import random
 
 from .encode import BYTE_UNITS
 
+INF = float("inf")
+
 
 def drive_of(p, units):
     """Summed learned weight from ``units`` to each byte unit."""
@@ -38,7 +40,17 @@ def prob(drive, b, lam):
 
 
 def score_with(drive_fn, enc, files, lam):
-    """(bits per byte, predictions) of ``drive_fn(units)`` on ``files``."""
+    """(bits per byte, predictions) of ``drive_fn(units)`` on ``files``.
+
+    Checked HERE rather than inside `prob`, which runs once per byte.
+    A non-positive lam makes an unseen byte impossible (-log2(0)), and
+    a negative one leaves the distribution summing to 1 while single
+    probabilities go negative -- so the bits figure either raises or
+    comes out better than physically possible.
+    """
+    if lam != lam or lam in (INF, -INF) or lam <= 0.0:
+        raise ValueError("lam must be a finite positive number, got %r"
+                         % (lam,))
     bits = 0.0
     n = 0
     for data in files:

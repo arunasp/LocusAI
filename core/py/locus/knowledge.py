@@ -43,6 +43,8 @@ from array import array
 
 from .encode import BYTE_UNITS, NgramEncoder
 
+INF = float("inf")
+
 MAGIC = b"LOCUSKN1"
 META = 1
 TOP_ONLY = 2
@@ -129,6 +131,22 @@ class Knowledge:
         self.enc = NgramEncoder.from_tables(m["orders"], m["heads"],
                                             m["tables"])
         self.lam = m["lam"]
+        # lam IS the floor that makes every byte possible: p(b) carries
+        # lam / BYTE_UNITS of uniform mass, so at lam <= 0 an unseen
+        # byte has probability zero and -log2(0) is not a number of
+        # bits. A NEGATIVE lam is worse and is why this is checked
+        # rather than assumed: the probabilities still SUM TO ONE, so
+        # the obvious sanity check passes, while individual values go
+        # negative and the bits figure comes out BETTER than physically
+        # possible. It is read from a JSON sidecar on disk, so it is an
+        # input, not a constant.
+        if (not isinstance(self.lam, (int, float))
+                or self.lam != self.lam
+                or self.lam in (INF, -INF)
+                or self.lam <= 0.0):
+            raise ValueError("%s.json: lam must be a finite positive "
+                             "number, got %r"
+                             % (self.path, self.lam))
         self.gated = m.get("readout") == "gated"
         self.top = max(m["orders"])
         self.clock = m.get("clock", 0)

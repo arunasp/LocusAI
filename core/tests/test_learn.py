@@ -130,5 +130,41 @@ class ComplementarySystems(unittest.TestCase):
         self.assertEqual(n, sum(len(d) - 1 for d in self.data))
 
 
+class LamIsAFloorNotAConstant(unittest.TestCase):
+    """`p(b) = (drive[b] + lam / BYTE_UNITS) / (pos + lam)`.
+
+    The 256 is load-bearing: summing the numerator over exactly
+    BYTE_UNITS candidates gives pos + lam, which is the denominator, so
+    this normalises only while the support is that size and the drive is
+    filtered to it. lam is read from a store's JSON sidecar, so it is an
+    INPUT rather than a constant.
+    """
+
+    drive = {65: 2.0, 66: 1.0}
+
+    def test_no_byte_is_impossible(self):
+        # What lam BUYS: an unseen byte still has probability, so -log2
+        # of it is a number of bits rather than an error.
+        for lam in (3.05176e-05, 1.0):
+            for b in (0, 200, BYTE_UNITS - 1):
+                self.assertGreater(prob(self.drive, b, lam), 0.0)
+
+    def test_summing_to_one_does_not_prove_the_readout_is_sane(self):
+        # WHY lam IS CHECKED RATHER THAN TRUSTED. At lam < 0 the mass
+        # still sums to 1, so the obvious sanity check passes, while
+        # single probabilities are NEGATIVE -- and the bits figure then
+        # either raises or comes out better than physically possible.
+        total = sum(prob(self.drive, b, -0.5)
+                    for b in range(BYTE_UNITS))
+        self.assertAlmostEqual(total, 1.0, places=12)
+        self.assertLess(prob(self.drive, 200, -0.5), 0.0)
+
+    def test_a_non_positive_or_non_finite_lam_is_refused(self):
+        enc = encoder()
+        for bad in (0.0, -0.5, float("nan"), float("inf")):
+            with self.assertRaises(ValueError, msg="lam=%r" % (bad,)):
+                score_with(lambda units: {}, enc, STREAM, bad)
+
+
 if __name__ == "__main__":
     unittest.main()

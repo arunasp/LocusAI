@@ -145,6 +145,19 @@ MUTATIONS = [
      "        if False:",
      ["test_field"]),
 
+    ("a non-positive or non-finite lam is refused at the readout",
+     "py/locus/learn.py",
+     "    if lam != lam or lam in (INF, -INF) or lam <= 0.0:",
+     "    if False:",
+     ["test_learn"]),
+
+    ("the uniform mass is spread over exactly BYTE_UNITS candidates",
+     "py/locus/learn.py",
+     "    return (max(drive.get(b, 0.0), 0.0) + lam / BYTE_UNITS) "
+     "/ (pos + lam)",
+     "    return (max(drive.get(b, 0.0), 0.0) + lam / 255) / (pos + lam)",
+     ["test_learn"]),
+
     ("the constitution's costs cannot be reached from outside",
      "py/locus/constitution.py",
      "        self._costs = types.MappingProxyType(costs)",
