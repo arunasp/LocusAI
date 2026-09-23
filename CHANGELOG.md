@@ -8,6 +8,29 @@ versions, since nothing is released yet.
 
 ### Added
 
+- `core/py/locus/assemble.py`, `core/values.json` and `make system` --
+  INGEST, the last item on `CONSTITUTION.md`'s not-implemented list. A
+  values file read ONCE at construction supplies costs, the categorical
+  set, class incompatibilities, trace classes and releasers, and builds
+  the Constitution, Dispatcher, AssociativeGraph and one shared
+  DecisionTrace. Until this existed all four were constructed only by
+  tests -- declared, not active. An unknown key is refused rather than
+  ignored: a typo'd `forbiden` list would otherwise load as permitting
+  everything, silently.
+- `core/tools/audit.py` with `make audit` -- reports numeric constants
+  with no note calling them initial state, and definitions nothing
+  references, across every .py/.c/.h/.cpp in the repository except build
+  output, virtualenvs and VENDORED headers. References are counted from
+  the PARSE TREE, not as substrings: a name mentioned in a comment was
+  reading as a caller and silently clearing an inert definition, and a
+  false "used" is worse than a false "unused". A decorated definition is
+  registered by its decorator and is not reported.
+- `core/tests/exp_repertoire.py` -- the enumerating survey against the
+  driven one. With coverage matched they agree EXACTLY (46/46, 37/37,
+  59/59 at three seeds); the apparent 0.59-0.67 gap was the unique-cue
+  count, not the method. `survey_saturating` takes the sample count from
+  the field instead: 45 supports after 179 cues, 57 after 231.
+
 - `core/py/locus/encode.py` — byte-stream sensory encoding: 256 byte
   units plus hashed n-gram units (orders 2–4, two heads), Engram-style.
   Table sizes are derived from the stream (smallest prime at or above the
@@ -534,6 +557,19 @@ same object — a field at maximum capacity has nothing left to compress.
   manual reconnect.
 
 ### Fixed
+
+- Promotion required raw repetition, which `ARCHITECTURE.md` had listed
+  as wrong since the design was written: a habit should form from a
+  recurring WINNER SEQUENCE whose outcome has stopped surprising.
+  `store.c` now keeps a ring of recent active-set signatures and counts
+  a calm re-application only when that set recurred. Three C tests and
+  five Python tests failed on the change, each because it reinforced a
+  trace that had never won a moment -- the behaviour being removed.
+- `NoveltyGate` only ever inserted, so novelty was measured against
+  everything EVER admitted and an event could never become novel again
+  after its trace was evicted. Given a store, a key the store no longer
+  holds stops counting as known, and the pruning rides the novelty
+  comparison rather than adding a sweep.
 
 - `core/Makefile` included both `../cicd-common.mk` and
   `/etc/cicd-common.mk` whenever both were visible, redefining `help`.

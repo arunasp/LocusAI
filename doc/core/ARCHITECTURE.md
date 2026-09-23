@@ -109,8 +109,11 @@ promotion and residency promotion are one mechanism.
 consecutive re-applications whose prediction error is at or below
 `surprise_floor`; a surprising outcome resets the run.
 
-**Not yet implemented.** The run is counted per trace. A recurring
-sequence of winners across traces is not tracked.
+**Implemented.** The run is counted per trace AND the winner set is
+tracked: `store.c` keeps a ring of recent active-set signatures, and a
+calm re-application counts toward a habit only when that set was active
+in an earlier moment. An empty active set is not a sequence and never
+recurs. Repetition alone no longer promotes.
 
 ### Learning a byte stream, measured
 
