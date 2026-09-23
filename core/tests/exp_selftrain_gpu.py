@@ -71,16 +71,26 @@ import exp_learn_stream as X                   # noqa: E402
 LEARNER = "cls, neocortex also metaplastic (1/n)"
 
 
-def run_arm(binary, enc, train, val, test, extra):
-    """Device train+score on train+extra; returns test bpb at best lam."""
+def run_arm(binary, enc, train, val, test, extra, base=None):
+    """Device train+score on train+extra; returns test bpb at best lam.
+
+    `base` is a prepared train set (G.prepare). Every arm shares the
+    same corpus and differs by one appended file, so rebuilding the
+    bytes and the position arrays per arm was the same work ten times --
+    measured at 64% of wall before this. The prepared form is proved
+    equal to a rebuild in tests/test_prepare.py.
+    """
     files = list(train) + ([extra] if extra else [])
+    prepared = None
+    if base is not None:
+        prepared = G.with_extra(base, extra) if extra else base
     tmp = tempfile.mkdtemp(prefix="selftrain-gpu-")
     try:
         _lb, kind, opts = [t for t in G.LEARNERS if t[0] == LEARNER][0]
         vb, tb, _nv, _nt = G.device_run(binary, enc, files, val, test,
                                         kind, opts,
                                         know=os.path.join(tmp, "k"),
-                                        gated=True)
+                                        gated=True, prepared=prepared)
         _val, lam = min(zip(vb, G.LAMS))
         return tb[G.LAMS.index(lam)], lam
     finally:
@@ -163,19 +173,25 @@ def main(argv):
     control = pool_text[-count:]
     test = [pool_text[:-count]]
 
+    # Built once, reused by every arm.
+    _lb, kind, opts = [t for t in G.LEARNERS if t[0] == LEARNER][0]
+    if kind == "cls" and opts.get("replay"):
+        prep = None                      # replay cannot be appended to
+    else:
+        prep = G.prepare(parts["train"])
     base, _lam = run_arm(binary, enc, parts["train"], parts["val"],
-                         test, None)
+                         test, None, prep)
     print("baseline  %.6f bits per byte" % base)
 
     selves = []
     for i, bab in enumerate(babbles, 1):
         bpb, _lam = run_arm(binary, enc, parts["train"], parts["val"],
-                            test, bab)
+                            test, bab, prep)
         selves.append(bpb)
         print("self   %d  %.6f  (%+.6f)" % (i, bpb, bpb - base))
 
     ctrl, _lam = run_arm(binary, enc, parts["train"], parts["val"],
-                         test, control)
+                         test, control, prep)
     print("control   %.6f  (%+.6f)" % (ctrl, ctrl - base))
 
     m, hr = spread(selves)

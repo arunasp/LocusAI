@@ -287,8 +287,58 @@ def schedule(train, replay):
     return main, online
 
 
+def blob(files):
+    """Concatenated bytes and the start offset of each file."""
+    starts = array("q", [0])
+    for d in files:
+        starts.append(starts[-1] + len(d))
+    return b"".join(files), starts
+
+
+def prepare(train, replay=False):
+    """The parts of a device run that depend only on the TRAIN SET.
+
+    An ablation runs the same corpus many times with one file appended,
+    and device_run rebuilt all of it every time: the concatenated bytes,
+    the file starts, and the position arrays -- 86.9 MB of text becomes
+    tens of millions of int64 positions, built in Python and written out
+    as a 2.9 GB schedule. Measured before this existed: 64% of wall was
+    host work.
+
+    Only valid WITHOUT replay -- see with_extra().
+    """
+    tr, tfs = blob(train)
+    main, online = schedule(train, replay)
+    return {"tr": tr, "tfs": tfs, "main": main, "online": online,
+            "n": len(train), "replay": replay}
+
+
+def with_extra(base, extra):
+    """`base` with one more training file appended.
+
+    Exact without replay: schedule() gives each file a consecutive range
+    of global offsets, so a file added at the end adds its own range and
+    changes nothing before it. WITH replay a file's batch is drawn
+    against the episodes that came before, so appending would change
+    draws already in the array -- refused rather than silently wrong.
+    Proved against a full rebuild in tests/test_prepare.py.
+    """
+    if base["replay"]:
+        raise ValueError("prepared runs cannot append under replay")
+    start = len(base["tr"])
+    positions = array("q", range(start, start + len(extra) - 1))
+    main = array("q", base["main"])
+    online = array("q", base["online"])
+    main.extend(positions)
+    online.extend(positions)
+    tfs = array("q", base["tfs"])
+    tfs.append(start + len(extra))
+    return {"tr": base["tr"] + extra, "tfs": tfs, "main": main,
+            "online": online, "n": base["n"] + 1, "replay": False}
+
+
 def device_run(binary, enc, train, val, test, kind, opts, know=None,
-               gated=False):
+               gated=False, prepared=None):
     """Everything on the device (core/gpu/learn_device.cpp); returns
     (val bits per lam, test bits per lam, n_val, n_test). With ``know``
     the learned stores are also written there (core/tools/know.py)."""
@@ -296,16 +346,20 @@ def device_run(binary, enc, train, val, test, kind, opts, know=None,
              | (2 if opts.get("hippo") else 0)
              | (4 if opts.get("cortex_meta") else 0)
              | (8 if gated else 0))
-    main, online = schedule(train, kind == "cls" and opts.get("replay"))
-
-    def blob(files):
-        starts = array("q", [0])
-        for d in files:
-            starts.append(starts[-1] + len(d))
-        return b"".join(files), starts
-
-    tr, tfs = blob(train)
+    t_pack = time.time()
+    replay = kind == "cls" and opts.get("replay")
+    if prepared is not None and replay:
+        raise ValueError("prepared runs cannot be used under replay")
+    if prepared is not None:
+        main, online = prepared["main"], prepared["online"]
+        tr, tfs, nfiles = prepared["tr"], prepared["tfs"], prepared["n"]
+    else:
+        main, online = schedule(train, replay)
+        tr, tfs = blob(train)
+        nfiles = len(train)
     sc, sfs = blob(val + test)
+    t_pack = time.time() - t_pack
+    t_write = time.time()
     fd, inp = tempfile.mkstemp(suffix=".in")
     out = inp[:-3] + ".out"
     with os.fdopen(fd, "wb") as f:
@@ -314,13 +368,14 @@ def device_run(binary, enc, train, val, test, kind, opts, know=None,
         for k, _h, seed, off, size in enc.tables:
             f.write(struct.pack("<iIii", k, seed, off, size))
         f.write(struct.pack("<q", len(tr)) + tr)
-        f.write(struct.pack("<i", len(train)) + tfs.tobytes())
+        f.write(struct.pack("<i", nfiles) + tfs.tobytes())
         f.write(struct.pack("<q", len(main)) + main.tobytes())
         f.write(struct.pack("<q", len(online)) + online.tobytes())
         f.write(struct.pack("<q", len(sc)) + sc)
         f.write(struct.pack("<i", len(val) + len(test)) + sfs.tobytes())
         f.write(struct.pack("<i", len(val)))
         f.write(struct.pack("<i", len(LAMS)) + array("d", LAMS).tobytes())
+    t_write = time.time() - t_write
     cmd = [binary, inp, out] + ([know] if know else [])
     # DEVICE SECONDS, recorded where the device call actually happens.
     # `perfmon summary` has always accepted a DEVICE_S argument and
@@ -331,6 +386,14 @@ def device_run(binary, enc, train, val, test, kind, opts, know=None,
     t_dev = time.time()
     r = subprocess.run(cmd, capture_output=True, text=True)
     t_dev = time.time() - t_dev
+    # WHERE A RUN'S TIME GOES, on request. Wall minus device was 64% on
+    # this path, and the obvious suspect -- rebuilding the schedule --
+    # turned out to be a tenth of it, so an optimisation aimed there
+    # changed the total by nothing. Phases are cheap and settle that
+    # kind of question in one run instead of three.
+    if os.environ.get("LOCUS_PHASES"):
+        sys.stderr.write("phases: pack %.1f s, write %.1f s, device "
+                         "%.1f s\n" % (t_pack, t_write, t_dev))
     tally = os.environ.get("LOCUS_DEVICE_S")
     if tally:
         with open(tally, "a") as fh:
