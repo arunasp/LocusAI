@@ -421,6 +421,13 @@ bench: ## Time the real tasks and append to build/bench/history.csv
 audit: ## Report unflagged constants and inert code in core/py/locus
 	$(PYTHON3) tools/audit.py $(AUDITARGS)
 
+# The running path that ASSEMBLES the constrained system from a values
+# file: costs, the categorical set, incompatibilities and classes, read
+# once at construction. VALUES=path picks another file; SYSARGS='--cue X'
+# dispatches a cue and shows the audit trace, refusals included.
+system: ## Assemble the system from values.json and report what it permits
+	$(PYTHON3) tools/system.py $(VALUES) $(SYSARGS)
+
 # Long jobs exceed a tool call, and polling them through the cicd_runner
 # coordinator blocks its single event loop. Start them detached in the
 # project container with ONE call, then read build/$(JOB).log through the

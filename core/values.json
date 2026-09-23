@@ -1,0 +1,24 @@
+{
+  "costs": {
+    "orient": 1.0,
+    "record": 0.9,
+    "reply": 0.6,
+    "write-file": 0.25,
+    "delete-file": 0.05
+  },
+  "forbidden": [
+    "self-modify"
+  ],
+  "conflicts": {
+    "delete-file": ["write-file"]
+  },
+  "classes": {
+    "draft": "write-file",
+    "cleanup": "delete-file",
+    "note": "record"
+  },
+  "releasers": {
+    "alarm": {"key": 1, "action": "orient", "class": "orient"},
+    "wipe": {"key": 2, "action": "erase-store", "class": "self-modify"}
+  }
+}

@@ -252,10 +252,14 @@ Present state:
   construction, exposed read-only, refuses before any pathway runs, and
   cannot carry a cost (construction fails if an act is both forbidden
   and priced, since a price invites the reading that evidence buys it).
-  INGEST is still open: the costs and the set are passed in by whoever
-  builds the Constitution, AND NOTHING IN A RUNNING PATH BUILDS ONE.
-  `make audit` reports it: Constitution, Dispatcher, DecisionTrace and
-  AssociativeGraph are constructed only by tests, so all four mechanisms
-  above are DECLARED and tested rather than ACTIVE. Ingest is what would
-  change that -- a source of costs and of the categorical set, read at
-  construction by whatever assembles the system.
+  INGEST IS DONE: `py/locus/assemble.py` builds the whole system from a
+  values file (`core/values.json`) read ONCE at construction -- costs,
+  the categorical set, class incompatibilities, trace classes and
+  releasers -- and `make system` is the running path that does it, so
+  the four mechanisms above are now ACTIVE rather than only declared. An
+  unknown key in that file is refused rather than ignored, since a
+  typo'd `forbiden` would otherwise load as permitting everything,
+  silently. One DecisionTrace covers the dispatcher and the graph, so
+  refusals from either and pairs the graph only noticed land in one
+  audit surface. Changing values means editing the file and building
+  again: nothing in the assembled system can alter what binds it.
