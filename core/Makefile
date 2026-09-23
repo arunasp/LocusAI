@@ -101,7 +101,7 @@ TESTBIN  = $(BUILD)/test_store
 # target shares its name with the gpu/ source directory, so without .PHONY
 # make sees the directory, considers the target satisfied, and silently does
 # nothing. Same collision the `build` target hit during the scaffold build.
-.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock gpu-syntax hip-header-check rocm-headers rocm-image excursion bandwidth field-step field-sparse field-quiet gpu-cache hierarchy capacity operating-point stack singlepass precision stream stream-learn stream-learn-gpu bg jobs job-stop job-clean
+.PHONY: lint test build deploy verify e2e all clean audit-ratchet audit-accept gpu caps persist caps-mock gpu-syntax hip-header-check rocm-headers rocm-image excursion bandwidth field-step field-sparse field-quiet gpu-cache hierarchy capacity operating-point stack singlepass precision stream stream-learn stream-learn-gpu bg jobs job-stop job-clean
 
 # Sentinel file, deliberately NOT in .PHONY: a .PHONY listing would
 # force the install to re-run on every invocation regardless of
@@ -165,7 +165,7 @@ e2e: verify ## Alias for verify
 # /usr/local) and needs privileges a cicd_runner worker running as
 # the host uid:gid does not have. Run it explicitly with a writable
 # prefix instead: make deploy PREFIX=$$HOME/.local
-all: .deps lint build test verify ## Run the full pipeline
+all: audit-ratchet .deps lint build test verify ## Run the full pipeline
 
 # Measures how many distinguishable states the field holds, which is
 # the blocker for anything task-shaped: a coding task must tell apart
@@ -455,6 +455,20 @@ gpu-syntax: hip-header-check ## hipcc -fsyntax-only over core/gpu/*.cpp (skips w
 
 mutate: ## Mutation-test the design claims (--only SUBSTRING, --list)
 	$(PYTHON3) tools/mutate.py $(MUTARGS)
+
+# A RATCHET on undeclared static values, not a target. The standing
+# constraint (doc/core/ROADMAP.md) is no static value where biology has
+# dynamics, and any value that cannot yet be derived is recorded as
+# initial state with its open question. Stating the rule has not held it
+# -- LOCUS_SEQ_HISTORY = 32 was added the same day it was quoted -- so
+# `all` refuses an INCREASE. The existing 138 are a debt to pay one
+# decision at a time; declaring one lowers the floor, which is written
+# back. `make audit-accept` re-baselines deliberately.
+audit-ratchet: ## Refuse a NEW undeclared numeric constant
+	$(PYTHON3) tools/audit.py --ratchet
+
+audit-accept: ## Re-baseline the undeclared-constant count on purpose
+	$(PYTHON3) tools/audit.py --ratchet --accept
 
 doc-audit: ## Check docs against the repo (paths, targets, symbols, stale claims)
 	$(PYTHON3) tools/docaudit.py $(DOCARGS)

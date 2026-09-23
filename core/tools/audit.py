@@ -29,6 +29,7 @@ findings is a decision, not a fix.
 
 import ast
 import collections
+import json
 import os
 import re
 import sys
@@ -244,6 +245,55 @@ def report(files, want_c, want_i):
             print("  %-40s %s" % (name, where))
 
 
+BASELINE = os.path.join(REPO, "core", "audit-baseline.json")
+
+
+def ratchet(files, write=False):
+    """Fail when the count of UNDECLARED numeric values goes UP.
+
+    doc/core/ROADMAP.md's standing constraint is no static value where
+    biology has dynamics, and any value that cannot yet be derived is
+    recorded as initial state with its open question. That rule has been
+    stated in three places and restated in most sessions, and the count
+    still grows -- `LOCUS_SEQ_HISTORY = 32` was added the same day the
+    rule was quoted back. A rule nobody can fail to notice is not the
+    same as a rule that cannot be broken.
+
+    So this is a RATCHET, not a target: the existing values are a debt
+    to be decided one at a time, and the only thing refused is ADDING to
+    it. Declaring a value (a nearby note calling it initial state, an
+    open question, measured, derived, a bound) lowers the number, and a
+    lowered number is written back so the floor follows the work down.
+    """
+    rows = constants(files)
+    bare = [r for r in rows if not r[4]]
+    now = len(bare)
+    base = now
+    if os.path.exists(BASELINE):
+        with open(BASELINE) as fh:
+            base = json.load(fh).get("undeclared", now)
+    if write or now < base:
+        with open(BASELINE, "w") as fh:
+            json.dump({"undeclared": now,
+                       "note": "Undeclared numeric values. May fall, "
+                               "never rise: see ratchet() in "
+                               "tools/audit.py."}, fh, indent=2)
+            fh.write("\n")
+        print("audit-ratchet: baseline now %d (was %d)" % (now, base))
+        return 0
+    if now > base:
+        print("audit-ratchet: FAIL -- %d undeclared numeric values, "
+              "baseline %d." % (now, base))
+        print("  A new static value needs a note saying what it is: "
+              "initial state, an open question, measured, derived, or "
+              "a bound. Or derive it and add none.")
+        for where, line, name, value, _f in sorted(set(bare))[:0]:
+            pass
+        return 1
+    print("audit-ratchet: %d undeclared, baseline %d -- ok" % (now, base))
+    return 0
+
+
 def main(argv):
     want_c = "--constants" in argv or not set(argv) & {"--constants",
                                                        "--inert"}
@@ -252,6 +302,8 @@ def main(argv):
     if "--path" in argv:
         root = os.path.join(REPO, argv[argv.index("--path") + 1])
     files = sources(root, include_vendor="--all" in argv)
+    if "--ratchet" in argv:
+        return ratchet(files, write="--accept" in argv)
     print("scanning %s (%d files)\n" % (os.path.relpath(root, REPO) or ".",
                                         len(files)))
     report(files, want_c, want_i)

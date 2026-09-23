@@ -1,0 +1,4 @@
+{
+  "undeclared": 138,
+  "note": "Undeclared numeric values. May fall, never rise: see ratchet() in tools/audit.py."
+}
