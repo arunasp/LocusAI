@@ -31,10 +31,20 @@ MEASURED: harmful at every scale. ts-32 +0.001290 against a control of
 (exp_selftrain_gpu.py) settles it with a spread -- ts-2002 +0.002657
 +/- 0.000009 across 8 seeds, control -0.000059.
 
-SO BABBLE IS AN INSTRUMENT, NOT A TRAINING SOURCE. It measures what
-the store can produce (exp_babble.py); feeding it back costs
-prediction accuracy. Any stage that wants a practice stream has to
-get it from the environment.
+WHAT THAT LICENSES, STATED NO WIDER THAN THE MEASUREMENT. Babble is
+imprecise by construction -- it is what the store believes, sampled --
+so its use is as a MEASUREMENT OF HOW WELL A TRAINING STEP WENT:
+exp_babble.py reads production directly, where bits per byte only
+reads prediction, and the two moved differently across the learning
+curve.
+
+What is ruled out is feeding it back UNCONTROLLED. Nothing here says
+self-generated material can never help; it says an unfiltered stream
+does not, because sampling and re-learning re-weights the store toward
+what it already favoured and no information enters. A feedback path
+would need a controlled stream -- selected, checked, or scored against
+something outside the store -- and that control is the part that would
+have to be built and measured, not assumed.
 
 Nothing is written to the original store: each arm loads its own copy.
 """

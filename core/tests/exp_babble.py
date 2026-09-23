@@ -39,6 +39,7 @@ Standard library only, CPU only. The store is read, never written.
 import os
 import random
 import sys
+from multiprocessing import Pool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "py"))
 
@@ -66,6 +67,33 @@ def babble(know, count, seed_text, rng):
                 break
         buf.append(pick if pick is not None else BYTE_UNITS - 1)
     return bytes(buf[len(seed_text):])
+
+
+def babble_many(store_path, count, seeds, seed_text=b"Once upon a time",
+                jobs=None):
+    """`count` bytes per seed, one process per seed.
+
+    THE CPU PATH IS NOT A LEFTOVER. A stream is serial along its own
+    sequence, but seeds are independent, so they are the parallel
+    dimension on whichever processor is available: the device carries
+    them as a batch (tools/babble_gpu.py), and here they are one
+    process each. This is what runs where there is no device binary --
+    a boot without a GPU, a worker container, or while the device is
+    held by another job -- and it is the reference the kernel is
+    verified against, so it cannot be allowed to rot.
+    """
+    jobs = jobs or min(len(seeds), os.cpu_count() or 1)
+    args = [(store_path, count, seed, seed_text) for seed in seeds]
+    with Pool(jobs) as pool:
+        return pool.map(_one, args)
+
+
+def _one(args):
+    """One stream, in its own process. Module level because a Pool
+    pickles by name."""
+    store_path, count, seed, seed_text = args
+    return babble(Knowledge(store_path), count, seed_text,
+                  random.Random(seed))
 
 
 def vocabulary(corpus_dir, held_out=True, salt=""):

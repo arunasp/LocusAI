@@ -17,7 +17,8 @@ rather than a rounding error.
 
 WHAT IS ON WHICH PROCESSOR, AND WHY:
 
-  babble generation -- DEVICE, through tools/babble_gpu.py. The
+  babble generation -- DEVICE where its binary is present, K CORES
+  otherwise, resolved at invocation. Through tools/babble_gpu.py. The
   sequence is serial per stream, since each byte conditions on the one
   before it, but seeds are independent and become the BATCH DIMENSION:
   S streams advance per launch. This ran on K cores until that kernel
@@ -44,7 +45,8 @@ The spread is 295x below the effect, and an equal quantity of REAL
 held-out text costs 45x less than the store's own output -- so this is
 the babble, not the sampler, and not "any further reading hurts".
 ts-32 at 2.59%: +0.007105 +/- 0.000147 against control -0.001024.
-Harmful at every scale tested, scaling with the babble's share.
+Harmful at every scale tested, scaling with the babble's share --
+for an UNCONTROLLED stream, which is the only kind measured here.
 
 Nothing writes to STORE; it is read to generate, and the arms build
 their own stores in a temporary directory.
@@ -62,6 +64,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "py"))
 from locus.encode import NgramEncoder, repo_files   # noqa: E402
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
 import babble_gpu as BG                        # noqa: E402
+import exp_babble as B                         # noqa: E402
 import exp_learn_gpu as G                      # noqa: E402
 import exp_learn_stream as X                   # noqa: E402
 
@@ -126,11 +129,30 @@ def main(argv):
     # the whole set is seconds, so the seed count is now chosen for the
     # error bar rather than for what a core could afford.
     t0 = time.time()
-    babbles = BG.generate(store, os.path.join(os.path.dirname(binary),
-                                              "babble_device"),
-                          seeds, count, b"Once upon a time")
-    print("generated %d streams x %d bytes on the device in %.1f s"
-          % (len(babbles), count, time.time() - t0))
+    device = os.path.join(os.path.dirname(binary), "babble_device")
+    # Resolved here, not assumed: the device carries seeds as a batch,
+    # and where its binary is absent the same seeds are one process
+    # each.
+    #
+    # THE TWO PATHS DO NOT PRODUCE THE SAME BYTES, and saying they did
+    # was wrong: the device draws from splitmix64 and exp_babble.py
+    # from random.Random, so seed 1 is a different stream on each.
+    # Measured on ts-32 at 20000 bytes: device +0.003628, cores
+    # +0.003782. What `babble_gpu.py --verify` proves is that the
+    # KERNEL ARITHMETIC matches the reader exactly, comparing against a
+    # CPU reference that draws from splitmix64 too. So the paths are
+    # interchangeable for a result quoted with its spread, and NOT for
+    # reproducing a specific stream -- which is why `where` is printed
+    # beside the figures.
+    if os.path.exists(device):
+        babbles = BG.generate(store, device, seeds, count,
+                              b"Once upon a time")
+        where = "device"
+    else:
+        babbles = B.babble_many(store, count, list(range(1, seeds + 1)))
+        where = "%d cores" % min(seeds, os.cpu_count() or 1)
+    print("generated %d streams x %d bytes on %s in %.1f s"
+          % (len(babbles), count, where, time.time() - t0))
 
     # Equal quantity of REAL text the store has not read, cut out of the
     # scored set so no arm can memorise part of its own exam.
