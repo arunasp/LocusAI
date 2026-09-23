@@ -553,5 +553,41 @@ class ConstitutionTest(unittest.TestCase):
         self.assertEqual(con.reversibility("note"), 1.0)
 
 
+class SpreadFloorIsDerived(unittest.TestCase):
+    """The cutoff was 0.01, a number with no relation to the graph it
+    cut. It is now decay**depth -- the weakest contribution any
+    legitimate path can deliver -- so it moves with the two parameters
+    that define reach.
+    """
+
+    def chain(self, **kw):
+        g = AssociativeGraph(**kw)
+        g.link(1, 2, 0.9)
+        g.link(2, 3, 0.9)
+        g.link(3, 4, 0.9)
+        return g
+
+    def test_the_floor_is_the_weakest_legitimate_path(self):
+        g = AssociativeGraph()
+        self.assertAlmostEqual(g.floor, g.decay ** g.depth)
+
+    def test_a_hop_weaker_than_any_full_path_is_not_followed(self):
+        # 0.9-weighted hops at decay 0.5 reach 0.091 by the third hop,
+        # under the derived floor of 0.125 and over the old 0.01.
+        reached = self.chain()
+        self.assertNotIn(4, reached.spread([1]),
+                         "a contribution weaker than the weakest whole "
+                         "path was still followed")
+
+    def test_an_explicit_floor_still_wins(self):
+        self.assertIn(4, self.chain(floor=0.01).spread([1]))
+
+    def test_the_floor_follows_a_depth_override(self):
+        # Reaching further makes the weakest legitimate path weaker, so
+        # the cutoff has to move with it or it is just a constant again.
+        g = self.chain()
+        self.assertIn(4, g.spread([1], depth=6))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

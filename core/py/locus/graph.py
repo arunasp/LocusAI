@@ -26,13 +26,25 @@ import types
 class AssociativeGraph:
     """Weighted, undirected-by-default associative link structure."""
 
-    def __init__(self, decay=0.5, floor=0.01, depth=3, classes=None,
+    def __init__(self, decay=0.5, floor=None, depth=3, classes=None,
                  conflicts=None, trace=None):
+        """`floor` is DERIVED unless given.
+
+        It was 0.01, a number with no relation to the graph it cut. The
+        weakest contribution any legitimate path can deliver is
+        decay**depth -- unit energy through unit weights at maximum
+        reach -- so anything below that is weaker than the weakest route
+        the graph itself admits, which is what "too faint to follow"
+        means here. It moves with decay and depth instead of standing
+        beside them, and a caller who wants a different cutoff still
+        passes one.
+        """
         if not 0.0 < decay < 1.0:
             raise ValueError("decay must lie in (0, 1)")
         self.decay = decay
-        self.floor = floor
         self.depth = depth
+        self._floor_given = floor is not None
+        self.floor = decay ** depth if floor is None else floor
         self._edges = {}
         # key -> class, and class -> the classes it may not join. Both are
         # read-only proxies: the layer that links does not get to edit
@@ -102,6 +114,10 @@ class AssociativeGraph:
             origins = {key: 1.0 for key in origins}
         depth = self.depth if depth is None else depth
         decay = self.decay if decay is None else decay
+        # Overriding decay or depth moves the weakest legitimate path,
+        # so a derived floor follows them rather than staying at the
+        # value the constructor happened to compute.
+        floor = self.floor if self._floor_given else decay ** depth
 
         activation = dict(origins)
         frontier = dict(origins)
@@ -110,7 +126,7 @@ class AssociativeGraph:
             for node, energy in frontier.items():
                 for peer, weight in self._edges.get(node, {}).items():
                     delta = energy * weight * decay
-                    if delta < self.floor:
+                    if delta < floor:
                         continue
                     nxt[peer] = nxt.get(peer, 0.0) + delta
             if not nxt:
