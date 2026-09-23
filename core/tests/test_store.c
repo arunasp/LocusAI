@@ -214,6 +214,50 @@ static void test_lease_blocks_eviction(void)
     locus_store_destroy(s);
 }
 
+/* doc/core/CONSTITUTION.md: the active set was bounded by activation
+ * alone, with no notion of class or of incompatibility. Two traces that
+ * must not co-occur are the case that proves it. */
+static void test_kwta_respects_incompatibility(void)
+{
+    LocusConfig cfg = locus_config_default();
+    cfg.capacity = 8;
+    cfg.active_k = 4;   /* room for both: only class may exclude them */
+    cfg.kwta_temp = 0.0;
+    cfg.conflicts[1] = 1u << 2; /* class 1 may not be active with class 2 */
+    LocusStore *s = locus_store_create(&cfg);
+
+    locus_put(s, 1, LOCUS_PATH_DECLARATIVE, "a", 1, 0.9);
+    locus_put(s, 2, LOCUS_PATH_DECLARATIVE, "b", 1, 0.8);
+    locus_put(s, 3, LOCUS_PATH_DECLARATIVE, "c", 1, 0.7);
+    ok(locus_set_class(s, 1, 1) == 0, "class set on 1");
+    ok(locus_set_class(s, 2, 2) == 0, "class set on 2");
+    ok(locus_class_of(s, 1) == 1, "class read back");
+    ok(locus_set_class(s, 99, 1) == -1, "absent key refused");
+    ok(locus_set_class(s, 1, 200) == -1, "out-of-range class refused");
+
+    /* A trace joins the active set in locus_tick, above activation 1.0. */
+    locus_excite(s, 1, 3.0);
+    locus_excite(s, 2, 2.5);
+    locus_excite(s, 3, 2.0);
+    locus_tick(s);
+
+    LocusView v;
+    int active_1 = locus_lookup(s, 1, &v) == 0 && v.tier == LOCUS_TIER_ACTIVE;
+    if (active_1)
+        locus_release(s, &v);
+    int active_2 = locus_lookup(s, 2, &v) == 0 && v.tier == LOCUS_TIER_ACTIVE;
+    if (active_2)
+        locus_release(s, &v);
+    int active_3 = locus_lookup(s, 3, &v) == 0 && v.tier == LOCUS_TIER_ACTIVE;
+    if (active_3)
+        locus_release(s, &v);
+
+    ok(!(active_1 && active_2), "incompatible classes never co-active");
+    ok(active_1, "the stronger of the pair keeps its place");
+    ok(active_3, "an unrelated trace is not displaced by the exclusion");
+    locus_store_destroy(s);
+}
+
 static void test_kwta_primitive(void)
 {
     double act[6] = { 0.1, 0.9, 0.4, 0.8, 0.2, 0.7 };
@@ -402,6 +446,7 @@ int main(void)
     test_tagging_and_capture();
     test_prefetch_advisory();
     test_lease_blocks_eviction();
+    test_kwta_respects_incompatibility();
     test_kwta_primitive();
     test_lease_expiry_frees_the_slot();
     test_release_after_reuse_is_a_noop();

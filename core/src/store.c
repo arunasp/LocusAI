@@ -38,6 +38,7 @@ typedef struct {
     int lease_ticks;
     int prefetched;
     int used;
+    uint8_t klass; /* trace class; 0 is unclassified */
     uint32_t generation; /* bumped on reuse and on lease revocation */
 } Slot;
 
@@ -55,6 +56,8 @@ LocusConfig locus_config_default(void)
     LocusConfig c;
     c.capacity = 1024;
     c.active_k = 4; /* interference-bounded, not byte-bounded */
+    for (int i = 0; i < LOCUS_CLASS_MAX; i++)
+        c.conflicts[i] = 0; /* nothing conflicts until something says so */
     c.decay = 0.85;
     c.capture_floor = 0.1;
     c.capture_gain = 0.5;
@@ -191,6 +194,7 @@ int locus_put(LocusStore *s, LocusKey key, LocusPathway path,
     t->heat = salience;
     t->tag = salience;
     t->tag_ticks = s->cfg.capture_window;
+    t->klass = 0; /* a reused slot must not inherit the last trace's class */
     t->used = 1;
 
     if (path == LOCUS_PATH_INSTINCT) {
@@ -400,6 +404,21 @@ int locus_excite(LocusStore *s, LocusKey key, double amount)
 /* Bound the unpinned active set by competition. Pinned traces are required
  * residents and are exempt; they do not consume kWTA width. Selection is
  * noisy, so a marginally weaker contender sometimes holds its place. */
+/* Does this class conflict with any already admitted? The relation is used
+ * symmetrically: a caller that declares only one direction still gets the
+ * exclusion, because co-activation has no direction. */
+static int conflicts_with(const LocusStore *s, uint8_t klass, uint32_t held)
+{
+    if (klass >= LOCUS_CLASS_MAX)
+        return 0;
+    if (s->cfg.conflicts[klass] & held)
+        return 1;
+    for (int c = 0; c < LOCUS_CLASS_MAX; c++)
+        if ((held & (1u << c)) && (s->cfg.conflicts[c] & (1u << klass)))
+            return 1;
+    return 0;
+}
+
 static void enforce_kwta(LocusStore *s)
 {
     int idx[LOCUS_KWTA_MAX];
@@ -417,12 +436,47 @@ static void enforce_kwta(LocusStore *s)
         act[n] = t->activation;
         n++;
     }
-    if (n <= s->cfg.active_k)
+    /* Room in the active set is not permission to co-occur: an
+     * incompatible pair must be separated even when the count is under
+     * the bound, which is the whole point of bounding by class as well.
+     * With no conflicts declared this is the old early return. */
+    int any_conflict = 0;
+    for (int c = 0; c < LOCUS_CLASS_MAX; c++)
+        if (s->cfg.conflicts[c]) {
+            any_conflict = 1;
+            break;
+        }
+    if (n <= s->cfg.active_k && !any_conflict)
         return;
+    int width = s->cfg.active_k < n ? s->cfg.active_k : n;
 
-    locus_kwta_noisy(act, n, s->cfg.active_k, s->cfg.kwta_temp, &s->rng, win);
+    locus_kwta_noisy(act, n, width, s->cfg.kwta_temp, &s->rng, win);
+
+    /* Activation decides who competes; class decides who may co-occur.
+     * Winners are admitted strongest first, and a winner incompatible with
+     * one already admitted loses its place rather than displacing it --
+     * otherwise the bound would be on count alone, which is what
+     * doc/core/CONSTITUTION.md names as missing. */
+    uint32_t held = 0;
+    for (int done = 0; done < n; done++) {
+        int best = -1;
+        for (int j = 0; j < n; j++)
+            if (win[j] == 1 && (best < 0 || act[j] > act[best]))
+                best = j;
+        if (best < 0)
+            break;
+        uint8_t klass = s->slots[idx[best]].klass;
+        if (conflicts_with(s, klass, held))
+            win[best] = 0; /* admitted rival already holds an incompatible class */
+        else {
+            win[best] = 2; /* admitted */
+            if (klass < LOCUS_CLASS_MAX)
+                held |= 1u << klass;
+        }
+    }
+
     for (int j = 0; j < n; j++)
-        if (!win[j])
+        if (win[j] != 2)
             s->slots[idx[j]].tier = LOCUS_TIER_EPISODIC;
 }
 
@@ -522,6 +576,28 @@ int locus_trace_pinned(const LocusStore *s, LocusKey key)
 {
     int i = s ? find(s, key) : -1;
     return i < 0 ? -1 : s->slots[i].pinned;
+}
+
+int locus_set_class(LocusStore *s, LocusKey key, uint8_t klass)
+{
+    if (!s || klass >= LOCUS_CLASS_MAX)
+        return -1;
+    for (int i = 0; i < s->capacity; i++)
+        if (s->slots[i].used && s->slots[i].key == key) {
+            s->slots[i].klass = klass;
+            return 0;
+        }
+    return -1;
+}
+
+int locus_class_of(const LocusStore *s, LocusKey key)
+{
+    if (!s)
+        return -1;
+    for (int i = 0; i < s->capacity; i++)
+        if (s->slots[i].used && s->slots[i].key == key)
+            return (int)s->slots[i].klass;
+    return -1;
 }
 
 void locus_kwta(const double *act, int n, int k, uint8_t *winners)

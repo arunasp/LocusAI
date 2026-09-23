@@ -11,6 +11,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Bitmask width for trace classes: a class id is a bit position, and 0
+ * means unclassified. */
+#define LOCUS_CLASS_MAX 32
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -112,6 +116,20 @@ typedef struct {
     double gate_decay;
 
     uint32_t seed; /* 0 selects a fixed default; runs are reproducible */
+
+    /* Incompatibility between trace classes. conflicts[c] is a bitmask of
+     * the classes that may not be ACTIVE alongside class c, so kWTA bounds
+     * the active set by class as well as by activation: a strong trace no
+     * longer drags an incompatible one into the same moment.
+     *
+     * It lives in the config because it is fixed at construction. The layer
+     * it constrains selects traces; it does not get to say which selections
+     * are permitted, which is what makes this a constraint rather than a
+     * preference (doc/core/CONSTITUTION.md).
+     *
+     * All zero by default: nothing conflicts with anything and selection
+     * behaves exactly as before. */
+    uint32_t conflicts[LOCUS_CLASS_MAX];
 } LocusConfig;
 
 /* Defaults grounded in the design notes: kWTA width in the Cowan range,
@@ -179,6 +197,13 @@ int locus_trace_pinned(const LocusStore *s, LocusKey key);
 /* Deterministic k-winners-take-all over an activation vector. Exposed because
  * the same competition bounds the active set and the separation stage. */
 void locus_kwta(const double *act, int n, int k, uint8_t *winners);
+
+/* Trace class, 0..LOCUS_CLASS_MAX-1, where 0 means unclassified. Returns 0
+ * on success, -1 if the key is absent or the class is out of range. */
+int locus_set_class(LocusStore *s, LocusKey key, uint8_t klass);
+
+/* Class of a trace, or -1 if the key is absent. */
+int locus_class_of(const LocusStore *s, LocusKey key);
 
 /* Stochastic variant: perturbs each activation by Gumbel noise scaled by
  * temp, then takes the top k, which draws k winners from the softmax over

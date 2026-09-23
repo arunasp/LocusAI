@@ -222,8 +222,16 @@ Present state:
   a releaser registered with a class gets its cost from the
   constitution rather than from the caller, and an unnamed class costs
   the most, not the least.
-- `enforce_kwta()` bounds the active set by activation alone; there is no
-  notion of class or of incompatibility.
+- DONE. `enforce_kwta()` bounds the active set by class as well as by
+  activation. `LocusConfig.conflicts[c]` is a bitmask of the classes that
+  may not be ACTIVE alongside class c, fixed at construction so the layer
+  that selects traces does not get to say which selections are permitted;
+  `locus_set_class()` tags a trace and a reused slot never inherits the
+  last one's class. Winners are admitted strongest first and an
+  incompatible winner loses its place rather than displacing the one
+  already admitted. Room in the active set is NOT permission to co-occur:
+  the exclusion applies even when the count is under the bound. With no
+  conflicts declared, selection behaves exactly as before.
 - `AssociativeGraph.link()` is public and unconstrained.
 - DONE. `DecisionTrace` (`py/locus/decisions.py`) records every
   dispatch, refusals included, and renders them for a person. The

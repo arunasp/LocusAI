@@ -79,6 +79,9 @@ class _Config(ctypes.Structure):
         ("gate_threshold", ctypes.c_double),
         ("gate_decay", ctypes.c_double),
         ("seed", ctypes.c_uint32),
+        # Mirrors LocusConfig exactly, including the trailing conflicts
+        # table: a mismatch here is silent memory corruption, not an error.
+        ("conflicts", ctypes.c_uint32 * 32),
     ]
 
 
