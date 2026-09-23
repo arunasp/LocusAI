@@ -552,7 +552,19 @@ int locus_excite(LocusStore *s, LocusKey key, double amount)
      * and gives the early advantage, heat decays slowly and gives the
      * later cost. Both rates already existed. */
     double heat = s->slots[i].heat;
-    double got = amount / (1.0 + (heat > 0.0 ? heat : 0.0));
+    /* THE SLOW VARIABLE FACILITATES. It divided here, which is the
+     * wrong sign for its timescale: in Mongillo's model the FAST
+     * variable (presynaptic resources, replenishing in ~200 ms)
+     * depresses and the SLOW one (calcium, ~1.5 s) FACILITATES, and
+     * heat is the slow variable in this store. Dividing by it also
+     * penalised the signal on the one path that matters most: reading
+     * IS recurrence.
+     *
+     * SATURATING, so it cannot run away: heat/(1+heat) is in [0, 1),
+     * so a driven trace gets at most twice the drive however hot it
+     * is. No coefficient and no ceiling constant. */
+    double h = heat > 0.0 ? heat : 0.0;
+    double got = amount * (1.0 + h / (1.0 + h));
     s->slots[i].activation += got;
     s->slots[i].drive += got;
     return 0;
@@ -565,11 +577,16 @@ int locus_attend(LocusStore *s, LocusKey key, double amount)
     int i = find(s, key);
     if (i < 0)
         return -1;
-    /* No division by heat: the task asked for this. Heat still RISES --
-     * the response happened and the record of it is what the
-     * unsolicited path reads. */
-    s->slots[i].activation += amount;
-    s->slots[i].drive += amount;
+    /* FACILITATED LIKE ANY OTHER DRIVE, and exempt only from
+     * DEPRESSION. Short-term facilitation follows prior firing, not the
+     * reason for it, so it applies on both paths; the refractory
+     * exemption is about exogenous orienting alone. Measured: applying
+     * facilitation to excite only moved the English gap by 0.001,
+     * because the reader drives through this function. */
+    double h = s->slots[i].heat > 0.0 ? s->slots[i].heat : 0.0;
+    double got = amount * (1.0 + h / (1.0 + h));
+    s->slots[i].activation += got;
+    s->slots[i].drive += got;
     return 0;
 }
 
