@@ -428,6 +428,14 @@ audit: ## Report unflagged constants and inert code in core/py/locus
 # Checks the DOCUMENTS against the repository: paths that do not exist,
 # make targets with no rule, symbols not in the source, and "not
 # implemented" claims whose subject now exists. Reports only.
+# Breaks a stated design property on purpose and requires a red test.
+# A green suite says the tests pass, not that they would CATCH the
+# property being broken -- one mechanism here already survived its own
+# removal with every test green. Reverts in a finally block and compares
+# the file byte for byte afterwards.
+mutate: ## Mutation-test the design claims (--only SUBSTRING, --list)
+	$(PYTHON3) tools/mutate.py $(MUTARGS)
+
 doc-audit: ## Check docs against the repo (paths, targets, symbols, stale claims)
 	$(PYTHON3) tools/docaudit.py $(DOCARGS)
 

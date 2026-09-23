@@ -1,0 +1,136 @@
+"""Break a stated design property on purpose and require a red test.
+
+  mutate.py [--only SUBSTRING] [--list]
+
+A green suite says the tests pass. It does not say they would CATCH the
+property being broken -- and this repository has already shipped one
+mechanism (the refresh that carries learning into the dynamics) whose
+removal left every test green. So each claim below is a sentence from
+the design documents, paired with an edit that makes it false and the
+tests that should notice.
+
+CAUGHT means the mutation turned a test red: the claim is held by
+something. SURVIVED means the code can lose that property silently, and
+the answer is a test, not a better suite average.
+
+Every mutation is applied to a file, run, and REVERTED in a finally
+block, with the original content compared byte for byte afterwards.
+A mutation left behind would be far worse than the gap it measures.
+"""
+
+import hashlib
+import os
+import subprocess
+import sys
+
+CORE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PY = os.path.join(CORE, ".venv", "bin", "python3")
+TESTS = os.path.join(CORE, "tests")
+
+# (claim, file, old, new, test selection)
+MUTATIONS = [
+    ("Dispatcher.fires is exact membership -- no partial match",
+     "py/locus/pathways.py",
+     "        return cue in self._releasers\n",
+     "        return True\n",
+     ["test_locus", "test_constitution_wiring"]),
+
+    ("commit_threshold scales inversely with reversibility",
+     "py/locus/commit.py",
+     "        return self.commit / max(reversibility, REVERSIBILITY_FLOOR)",
+     "        return self.commit",
+     ["test_locus", "test_constitution_wiring"]),
+
+    ("required_signals scales inversely with reversibility",
+     "py/locus/commit.py",
+     "        scale = 1.0 / max(reversibility, REVERSIBILITY_FLOOR)",
+     "        scale = 1.0",
+     ["test_locus", "test_constitution_wiring"]),
+
+    ("Consolidator.cost decays geometrically with confirmed reuse",
+     "py/locus/procedural.py",
+     "        return max(self.floor, DELIBERATE_COST * "
+     "(self.discount ** reps))",
+     "        return DELIBERATE_COST",
+     ["test_locus", "test_constitution_wiring"]),
+
+    ("spread decays per hop rather than reaching flat",
+     "py/locus/graph.py",
+     "        decay = self.decay if decay is None else decay",
+     "        decay = 1.0",
+     ["test_locus", "test_graph_constraint"]),
+
+    ("prefetch_set excludes the origins it was seeded with",
+     "py/locus/graph.py",
+     "             if k not in seeds),",
+     "             if True),",
+     ["test_locus"]),
+
+    ("NoveltyGate refuses to encode a familiar event",
+     "py/locus/episodic.py",
+     "        if error < self.threshold:\n            return False, 0.0",
+     "        if False:\n            return False, 0.0",
+     ["test_locus"]),
+
+    ("the constitution's costs cannot be reached from outside",
+     "py/locus/constitution.py",
+     "        self._costs = types.MappingProxyType(costs)",
+     "        self._costs = dict(costs)",
+     ["test_locus", "test_constitution_wiring", "test_assemble"]),
+]
+
+
+def run(tests):
+    r = subprocess.run([PY, "-m", "unittest"] + tests,
+                       cwd=TESTS, capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def main(argv):
+    only = None
+    if "--only" in argv:
+        only = argv[argv.index("--only") + 1]
+    if "--list" in argv:
+        for claim, path, _o, _n, _t in MUTATIONS:
+            print("  %-58s %s" % (claim, path))
+        return 0
+
+    survived, caught = [], []
+    for claim, rel, old, new, tests in MUTATIONS:
+        if only and only not in claim and only not in rel:
+            continue
+        path = os.path.join(CORE, rel)
+        original = open(path).read()
+        digest = hashlib.sha256(original.encode()).hexdigest()
+        if original.count(old) != 1:
+            print("STALE  %s\n       the mutation no longer matches %s -- "
+                  "the code moved, so fix the table" % (claim, rel))
+            survived.append(claim)
+            continue
+        try:
+            with open(path, "w") as fh:
+                fh.write(original.replace(old, new))
+            green = run(tests)
+        finally:
+            with open(path, "w") as fh:
+                fh.write(original)
+        back = hashlib.sha256(open(path).read().encode()).hexdigest()
+        if back != digest:
+            print("ABORT: %s was not restored" % rel)
+            return 2
+        if green:
+            survived.append(claim)
+            print("SURVIVED  %s\n          (%s, tests: %s)"
+                  % (claim, rel, ", ".join(tests)))
+        else:
+            caught.append(claim)
+            print("caught    %s" % claim)
+
+    print("\n%d caught, %d SURVIVED" % (len(caught), len(survived)))
+    for claim in survived:
+        print("  survived: %s" % claim)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
