@@ -117,6 +117,18 @@ static void test_pinned_exempt(void)
     locus_store_destroy(s);
 }
 
+/* Promotion needs a WINNER SET that recurs, not repetition alone
+ * (doc/core/ROADMAP.md stage 1), so a trace being reinforced has to have
+ * won a moment more than once. Two ticks with the same trace active is
+ * the smallest recurring set there is. */
+static void make_recurring(LocusStore *s, LocusKey key)
+{
+    for (int i = 0; i < 2; i++) {
+        locus_excite(s, key, 3.0);
+        locus_tick(s);
+    }
+}
+
 static void test_promotion(void)
 {
     LocusConfig cfg = locus_config_default();
@@ -124,6 +136,7 @@ static void test_promotion(void)
     LocusStore *s = locus_store_create(&cfg);
 
     locus_put(s, 1, LOCUS_PATH_DECLARATIVE, "h", 1, 0.2);
+    make_recurring(s, 1);
     ok(locus_reinforce(s, 1, 0.0) == 1, "first use");
     ok(locus_trace_pinned(s, 1) == 0, "not yet a habit");
     locus_reinforce(s, 1, 0.0);
@@ -217,6 +230,51 @@ static void test_lease_blocks_eviction(void)
 /* doc/core/CONSTITUTION.md: the active set was bounded by activation
  * alone, with no notion of class or of incompatibility. Two traces that
  * must not co-occur are the case that proves it. */
+/* doc/core/ROADMAP.md stage 1: repetition alone promotes things that are
+ * still surprising. What should promote is a recurring WINNER SEQUENCE
+ * with consistently small prediction error. */
+static void test_promotion_needs_a_recurring_winner_set(void)
+{
+    LocusConfig cfg = locus_config_default();
+    cfg.capacity = 8;
+    cfg.active_k = 2;
+    cfg.kwta_temp = 0.0;
+    cfg.promote_after = 3;
+    LocusStore *s = locus_store_create(&cfg);
+
+    locus_put(s, 1, LOCUS_PATH_DECLARATIVE, "a", 1, 0.5);
+    locus_put(s, 2, LOCUS_PATH_DECLARATIVE, "b", 1, 0.5);
+
+    /* The same pair wins every moment, and every outcome is calm. */
+    for (int i = 0; i < 6; i++) {
+        locus_excite(s, 1, 3.0);
+        locus_excite(s, 2, 3.0);
+        locus_tick(s);
+        locus_reinforce(s, 1, 0.0);
+    }
+    ok(locus_trace_pinned(s, 1) == 1, "recurring winner set promotes");
+    locus_store_destroy(s);
+
+    /* Same trace, same calm outcomes, same number of repetitions -- but a
+     * different partner each moment, so the set never recurs. */
+    cfg.capacity = 16;
+    s = locus_store_create(&cfg);
+    locus_put(s, 1, LOCUS_PATH_DECLARATIVE, "a", 1, 0.5);
+    for (int i = 0; i < 6; i++) {
+        LocusKey partner = (LocusKey)(100 + i);
+        locus_put(s, partner, LOCUS_PATH_DECLARATIVE, "p", 1, 0.5);
+        locus_excite(s, 1, 3.0);
+        locus_excite(s, partner, 3.0);
+        locus_tick(s);
+        locus_reinforce(s, 1, 0.0);
+    }
+    ok(locus_trace_reps(s, 1) >= cfg.promote_after,
+       "repetitions alone were plentiful");
+    ok(locus_trace_pinned(s, 1) == 0,
+       "repetition without a recurring set does not promote");
+    locus_store_destroy(s);
+}
+
 static void test_kwta_respects_incompatibility(void)
 {
     LocusConfig cfg = locus_config_default();
@@ -330,6 +388,7 @@ static void test_surprise_gates_promotion(void)
     LocusStore *s = locus_store_create(&cfg);
 
     locus_put(s, 1, LOCUS_PATH_DECLARATIVE, "h", 1, 0.2);
+    make_recurring(s, 1);
     for (int i = 0; i < 5; i++)
         locus_reinforce(s, 1, 0.9); /* still surprising */
     ok(locus_trace_reps(s, 1) == 5, "repetitions counted");
@@ -349,6 +408,7 @@ static void test_surprise_breaks_the_run(void)
     LocusStore *s = locus_store_create(&cfg);
 
     locus_put(s, 1, LOCUS_PATH_DECLARATIVE, "h", 1, 0.2);
+    make_recurring(s, 1);
     locus_reinforce(s, 1, 0.0);
     locus_reinforce(s, 1, 0.0);
     locus_reinforce(s, 1, 0.8); /* surprise resets the calm run */
@@ -446,6 +506,7 @@ int main(void)
     test_tagging_and_capture();
     test_prefetch_advisory();
     test_lease_blocks_eviction();
+    test_promotion_needs_a_recurring_winner_set();
     test_kwta_respects_incompatibility();
     test_kwta_primitive();
     test_lease_expiry_frees_the_slot();

@@ -12,6 +12,19 @@ from locus import (  # noqa: E402
 )
 
 
+def make_recurring(store, key):
+    """Give a trace a winner set that recurs.
+
+    Promotion needs a recurring WINNER SET, not repetition alone
+    (doc/core/ROADMAP.md stage 1), so a trace being reinforced has to
+    have won a moment more than once. One trace active across two ticks
+    is the smallest such set.
+    """
+    for _ in range(2):
+        store.excite(key, 3.0)
+        store.tick()
+
+
 class StoreTest(unittest.TestCase):
     def setUp(self):
         self.store = Store()
@@ -140,6 +153,7 @@ class ConsolidatorTest(unittest.TestCase):
         self.assertLess(second, first)
 
     def test_promotion_pins_and_reclassifies(self):
+        make_recurring(self.store, 1)
         for _ in range(3):
             self.consolidator.applied(1)
         self.assertTrue(self.consolidator.is_habit(1))
@@ -147,6 +161,7 @@ class ConsolidatorTest(unittest.TestCase):
         self.assertEqual(self.store.tier(1), Tier.ACTIVE)
 
     def test_habit_survives_disuse(self):
+        make_recurring(self.store, 1)
         for _ in range(3):
             self.consolidator.applied(1)
         for _ in range(30):
@@ -239,6 +254,7 @@ class DispatcherTest(unittest.TestCase):
     def test_habit_route_is_cheaper_than_deliberation(self):
         self.store.put(30, "shortcut")
         consolidator = Consolidator(self.store)
+        make_recurring(self.store, 30)
         for _ in range(2):
             consolidator.applied(30)
         outcome = self.dispatcher.act(30)
@@ -269,6 +285,7 @@ class IntegrationTest(unittest.TestCase):
                 self.assertEqual(lease.data, b"exit route")
             self.assertEqual(store.stats()["prefetch_hits"], 1)
 
+            make_recurring(store, 2)
             for _ in range(2):
                 consolidator.applied(2)
             self.assertTrue(consolidator.is_habit(2))
@@ -385,6 +402,7 @@ class SurpriseTest(unittest.TestCase):
         self.assertFalse(self.consolidator.is_habit(1))
 
     def test_unsurprising_repetition_promotes(self):
+        make_recurring(self.store, 1)
         for _ in range(3):
             self.consolidator.applied(1, surprise=0.0)
         self.assertTrue(self.consolidator.is_habit(1))

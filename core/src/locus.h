@@ -15,6 +15,13 @@
  * means unclassified. */
 #define LOCUS_CLASS_MAX 32
 
+/* Moments of active-set history kept for the promotion trigger. A habit
+ * forms from a WINNER SEQUENCE that recurs, so the store has to remember
+ * which sets it has been in. 32 is an initial value, not a measured one:
+ * the open question is how far back a recurrence should still count,
+ * which wants an answer from the data rather than from this header. */
+#define LOCUS_SEQ_HISTORY 32
+
 #ifdef __cplusplus
 extern "C" {
 #endif

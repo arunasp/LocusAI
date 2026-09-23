@@ -35,8 +35,14 @@ Depends on: nothing. All four are local to existing code.
 
 **Status:** lease expiry, Gumbel stochastic selection and gated
 re-stabilisation done 2026-08-10. Promotion is gated on a run of
-low-surprise re-applications per trace; the recurring winner-sequence
-form is open. See `CHANGELOG.md`.
+low-surprise re-applications per trace INSIDE A WINNER SET THAT RECURS:
+`store.c` keeps a ring of recent active-set signatures
+(`LOCUS_SEQ_HISTORY`, an initial value -- how far back a recurrence
+should count is open), and a calm re-application counts toward a habit
+only when that set has been active in an earlier moment. An empty active
+set is not a sequence and never recurs. Repetition alone no longer
+promotes, which changed three existing tests: they reinforced a trace
+that had never won a moment. See `CHANGELOG.md`.
 
 ## 2. Complete the competition model
 

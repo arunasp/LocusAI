@@ -51,7 +51,58 @@ struct LocusStore {
     LocusStats stats;
     double phasic; /* decaying component of modulatory tone */
     uint32_t rng;
+    /* Ring of recent active-set signatures, newest at seq_at. */
+    uint64_t seq[LOCUS_SEQ_HISTORY];
+    int seq_at;
+    int seq_len;
 };
+
+/* Signature of the active set: the keys of every ACTIVE slot, in slot
+ * order, hashed. Two moments with the same winners have the same
+ * signature; one extra or missing winner changes it. */
+static uint64_t active_signature(const LocusStore *s)
+{
+    uint64_t h = 1469598103934665603ULL; /* FNV-1a offset basis */
+    int any = 0;
+    for (int i = 0; i < s->capacity; i++) {
+        const Slot *t = &s->slots[i];
+        if (!t->used || t->tier != LOCUS_TIER_ACTIVE)
+            continue;
+        uint64_t k = (uint64_t)t->key;
+        any = 1;
+        for (int b = 0; b < 8; b++) {
+            h ^= (k >> (b * 8)) & 0xff;
+            h *= 1099511628211ULL;
+        }
+    }
+    /* An EMPTY active set is not a winner sequence. Left as a signature
+     * it would recur constantly and promote things that never won
+     * anything. */
+    return any ? h : 0;
+}
+
+/* Has this exact set of winners been active in an EARLIER moment? */
+static int signature_recurred(const LocusStore *s, uint64_t sig)
+{
+    int seen = 0;
+    if (!sig)
+        return 0;
+    for (int i = 0; i < s->seq_len; i++)
+        if (s->seq[i] == sig && ++seen >= 2)
+            return 1;
+    return 0;
+}
+
+static void remember_active_set(LocusStore *s)
+{
+    uint64_t sig = active_signature(s);
+    if (!sig)
+        return;
+    s->seq[s->seq_at] = sig;
+    s->seq_at = (s->seq_at + 1) % LOCUS_SEQ_HISTORY;
+    if (s->seq_len < LOCUS_SEQ_HISTORY)
+        s->seq_len++;
+}
 
 size_t locus_config_size(void)
 {
@@ -405,10 +456,17 @@ int locus_reinforce(LocusStore *s, LocusKey key, double surprise)
 
     /* An outcome that still surprises breaks the run: repetition is necessary
      * for a habit but not sufficient. What promotes is a sequence that has
-     * stopped producing prediction error. */
-    if (fabs(surprise) <= s->cfg.surprise_floor)
+     * stopped producing prediction error.
+     *
+     * And the sequence is the WINNER SET, not this trace alone. A calm
+     * re-application inside a set of winners the store has never been in
+     * before is a new situation that happened to go well, which is not a
+     * habit; it counts only once that set RECURS. Without this, repetition
+     * alone promotes, which is what doc/core/ROADMAP.md stage 1 names. */
+    if (fabs(surprise) <= s->cfg.surprise_floor
+            && signature_recurred(s, active_signature(s)))
         t->calm_run++;
-    else
+    else if (fabs(surprise) > s->cfg.surprise_floor)
         t->calm_run = 0;
 
     /* Repetition-count promotion IS tier promotion: the procedural
@@ -563,6 +621,7 @@ void locus_tick(LocusStore *s)
             t->tier = LOCUS_TIER_ARCHIVE;
     }
     enforce_kwta(s);
+    remember_active_set(s);
 }
 
 void locus_stats(const LocusStore *s, LocusStats *out)
