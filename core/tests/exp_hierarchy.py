@@ -41,6 +41,33 @@ sys.path.insert(0, HERE)
 
 from locus.field import Field                  # noqa: E402
 from fixtures import random_kernel             # noqa: E402
+from watchdog import PASS, Budget, stopped_on_event  # noqa: E402
+
+
+def settle(f, budget=24):
+    """Cycle until the support STOPS CHANGING, or the cap is reached.
+
+    A CAP IS NOT A STOPPING CRITERION, and this file had the error the
+    rule was written for: a fixed 12 cycles per run, with separability
+    compared across ratios from the results. HIERARCHY.md states the
+    requirement -- every run reports its termination event, and a sweep
+    containing a cap-terminated run is not compared -- and
+    `watchdog.Budget` exists in this repo to make the difference
+    impossible to leave implicit.
+
+    Returns (support, settled): `settled` is True when the support
+    repeated, False when the budget ran out.
+    """
+    b = Budget(budget, "settle")
+    previous = None
+    while True:
+        f.cycle()
+        support = support_of(f)
+        if support == previous:
+            return support, True
+        previous = support
+        if not b.spend():
+            return support, False
 
 
 def support_of(f):
@@ -69,10 +96,8 @@ def attractors(n, cues, seed):
     for c in range(cues):
         f = Field(n, kernel, seed=seed)
         f.inject(c * (n // cues), 1.0)
-        for _ in range(12):
-            f.cycle()
-        support = support_of(f)
-        out.append((c * (n // cues), support, list(f.a)))
+        support, settled = settle(f)
+        out.append((c * (n // cues), support, list(f.a), settled))
     return kernel, out
 
 
@@ -97,7 +122,7 @@ def one_ratio(args):
     kernel, settled = attractors(n, cues, seed)
 
     uppers = []
-    for _cue, _support, state in settled:
+    for _cue, _support, state, _ok in settled:
         up = project(state, n, m, reach)
         # An upper unit counts as in the support when it is above the
         # pool's OWN mean -- the same rank rule the store uses for
@@ -106,7 +131,7 @@ def one_ratio(args):
         uppers.append(frozenset(i for i, v in enumerate(up)
                                 if v > mean_up))
 
-    distinct_low = len({s for _c, s, _st in settled})
+    distinct_low = len({s for _c, s, _st, _ok in settled})
     distinct_up = len(set(uppers))
     separable = distinct_up / max(1, distinct_low)
 
@@ -117,7 +142,8 @@ def one_ratio(args):
     # out. The overlap itself is the measurement; CHANCE is the overlap
     # between DIFFERENT attractors, which is what it has to beat.
     overlaps = []
-    for (cue, support, _state), up in zip(settled, uppers):
+    recover_ok = []
+    for (cue, support, _state, _ok), up in zip(settled, uppers):
         f = Field(n, kernel, seed=seed)
         width = max(1, n // m) + reach
         for u in up:
@@ -125,13 +151,12 @@ def one_ratio(args):
             for i in range(max(0, centre - width // 2),
                            min(n, centre + width // 2)):
                 f.inject(i, fb / width)
-        for _ in range(12):
-            f.cycle()
-        back = support_of(f)
+        back, back_ok = settle(f)
+        recover_ok.append(back_ok)
         if back and support:
             overlaps.append(len(back & support) / len(back | support))
     chance = []
-    sets = [sup for _c, sup, _st in settled]
+    sets = [sup for _c, sup, _st, _ok in settled]
     for i in range(len(sets)):
         for j in range(i + 1, len(sets)):
             if sets[i] and sets[j]:
@@ -139,7 +164,10 @@ def one_ratio(args):
                               / len(sets[i] | sets[j]))
     mean = sum(overlaps) / len(overlaps) if overlaps else 0.0
     base = sum(chance) / len(chance) if chance else 0.0
-    return (ratio, m, distinct_low, distinct_up, separable, mean, base)
+    flags = [ok for _c, _s, _st, ok in settled] + recover_ok
+    verdict, why = stopped_on_event(flags)
+    return (ratio, m, distinct_low, distinct_up, separable, mean, base,
+            verdict, why)
 
 
 def main(argv):
@@ -172,9 +200,11 @@ def main(argv):
     work = [(n, cues, r, seed, reach, fb) for r in ratios]
     with Pool(jobs) as pool:
         for row in pool.map(one_ratio, work):
-            ratio, m, dl, du, sep, mean, base = row
-            print("%6d %6d %10d %10d %11.0f%% %8.2f vs %.2f chance"
-                  % (ratio, m, dl, du, 100 * sep, mean, base))
+            ratio, m, dl, du, sep, mean, base, verdict, why = row
+            print("%6d %6d %10d %10d %11.0f%% %8.2f vs %.2f chance  %s"
+                  % (ratio, m, dl, du, 100 * sep, mean, base, verdict))
+            if verdict != PASS:
+                print("       %s -- this row is not comparable" % why)
     print()
     print("Compression is the ratio at which BOTH still hold. Untrained,")
     print("so a ratio that already fails here is the informative case.")
