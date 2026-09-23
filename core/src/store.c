@@ -853,6 +853,14 @@ double locus_trace_activation(const LocusStore *s, LocusKey key)
     return i < 0 ? -1.0 : s->slots[i].activation;
 }
 
+double locus_trace_heat(const LocusStore *s, LocusKey key)
+{
+    if (!s)
+        return 0.0;
+    int i = find(s, key);
+    return i < 0 ? 0.0 : s->slots[i].heat;
+}
+
 int locus_trace_pinned(const LocusStore *s, LocusKey key)
 {
     int i = s ? find(s, key) : -1;

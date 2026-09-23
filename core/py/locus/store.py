@@ -208,6 +208,8 @@ def _bind(path):
         fn.restype = ctypes.c_int
     lib.locus_trace_activation.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
     lib.locus_trace_activation.restype = ctypes.c_double
+    lib.locus_trace_heat.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+    lib.locus_trace_heat.restype = ctypes.c_double
     lib.locus_kwta.argtypes = [
         ctypes.POINTER(ctypes.c_double), ctypes.c_int, ctypes.c_int,
         ctypes.POINTER(ctypes.c_uint8),
@@ -369,6 +371,10 @@ class Store:
 
     def activation(self, key):
         return self._lib.locus_trace_activation(self._handle, key)
+
+    def heat(self, key):
+        """Usage history, which outlives activation. Read-only."""
+        return self._lib.locus_trace_heat(self._handle, key)
 
     def kwta(self, activations, k, temp=0.0, seed=1):
         """Competition over an activation vector.

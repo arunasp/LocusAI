@@ -350,6 +350,36 @@ static int focal_after(double salience, double bg_excite)
  * POPULATION-relative values -- two denominators, one comparison --
  * and it archived a trace at 3.542 while keeping one at 2.55. All 94
  * checks passed, so the scale was unbound. */
+/* Heat is readable because the refractory window cannot be measured
+ * without it: facilitation then inhibition is a race between two decay
+ * rates and only activation was observable. Read-only -- heat is
+ * written by excite, capture and salience, never from outside. */
+static void test_heat_is_readable_and_outlives_activation(void)
+{
+    LocusConfig cfg = locus_config_default();
+    cfg.capacity = 32;
+    LocusStore *s = locus_store_create(&cfg);
+    ok(locus_trace_heat(s, 99) == 0.0,
+       "an unknown key reported heat");
+    locus_put(s, 1, LOCUS_PATH_DECLARATIVE, "a", 1, 1.0);
+    locus_excite(s, 1, 2.0);
+    locus_tick(s);
+    double a0 = locus_trace_activation(s, 1);
+    double h0 = locus_trace_heat(s, 1);
+    ok(h0 > 0.0, "heat was zero after an excite");
+    for (int i = 0; i < 9; i++)
+        locus_tick(s);
+    double a1 = locus_trace_activation(s, 1);
+    double h1 = locus_trace_heat(s, 1);
+    /* Measured over ten ticks: activation falls 4.3x, heat 1.41x. The
+     * biphasic shape depends on that separation, so it is asserted
+     * rather than assumed from the decay constants. */
+    ok(a0 / a1 > h0 / h1,
+       "heat no longer outlives activation -- the refractory window's "
+       "two rates have collapsed");
+    locus_store_destroy(s);
+}
+
 static void test_the_strongest_trace_keeps_its_slot(void)
 {
     LocusConfig cfg = locus_config_default();
@@ -711,6 +741,7 @@ int main(void)
     test_prefetch_advisory();
     test_lease_blocks_eviction();
     test_residency_is_relative_to_the_population();
+    test_heat_is_readable_and_outlives_activation();
     test_the_strongest_trace_keeps_its_slot();
     test_a_salient_background_event_breaks_through();
     test_instinct_sits_outside_the_capacity_window();

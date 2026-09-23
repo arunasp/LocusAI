@@ -225,6 +225,12 @@ int locus_trace_tier(const LocusStore *s, LocusKey key);
 int locus_trace_pathway(const LocusStore *s, LocusKey key);
 int locus_trace_reps(const LocusStore *s, LocusKey key);
 double locus_trace_activation(const LocusStore *s, LocusKey key);
+/* Usage history, which outlives activation. Read-only: heat is written
+ * by excite, capture and salience, never from outside. Exposed because
+ * the refractory window cannot be MEASURED without it -- facilitation
+ * then inhibition is a race between two decay rates, and only one of
+ * them was observable. */
+double locus_trace_heat(const LocusStore *s, LocusKey key);
 int locus_trace_pinned(const LocusStore *s, LocusKey key);
 
 /* Deterministic k-winners-take-all over an activation vector. Exposed because

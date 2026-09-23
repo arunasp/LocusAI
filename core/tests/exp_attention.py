@@ -161,6 +161,46 @@ def return_bias(drive, ticks_away, capacity_slots=64):
     return out
 
 
+def two_rates(drive, ticks, beta=0.1):
+    """Activation and heat after one cue, and what a heat-keyed input
+    depression would do to a later revisit.
+
+    The refractory window is biphasic in biology: detection is BETTER
+    for ~100-300 ms after attending and WORSE from ~500-3000 ms, and
+    the mechanism sits on the input -- short-term depression of early
+    sensory input (Satel et al. 2011), habituation of the orienting
+    response (Dukewich 2009). The trace is not weakened; what would
+    re-orient to it is.
+
+    Two decay rates are therefore all the shape needs: activation gives
+    the early advantage, heat outlives it and gives the later cost. This
+    measures both, and the crossover a `drive/(1 + beta*heat)`
+    depression would produce -- so the coefficient is chosen against
+    numbers rather than by borrowing one that was handy.
+
+    `beta` 0.1 here is the candidate coefficient BEING EVALUATED, not a
+    setting: it is the store's lateral-competition value, tried on the
+    input path to see whether it produces a crossover in the right
+    place. Measured: it does not -- 9% depression against a residual
+    advantage starting at +2.37, crossing at about tick 19 where
+    biology's facilitation-to-inhibition ratio is 2-10x. Nothing here
+    is wired into the store.
+    """
+    out = []
+    with S.Store(capacity=32, active_k=4) as st:
+        st.put(1, b"a", S.Pathway.DECLARATIVE, 1.0)
+        st.excite(1, drive)
+        for k in range(1, ticks + 1):
+            st.tick()
+            act, heat = st.activation(1), st.heat(1)
+            depressed = drive / (1.0 + beta * heat)
+            # A revisit is worth residual activation plus a depressed
+            # drive; a fresh trace is worth the undepressed drive.
+            out.append((k, act, heat, depressed,
+                        act + depressed - drive))
+    return out
+
+
 def main(argv):
     if not argv:
         print(__doc__)
@@ -211,6 +251,14 @@ def main(argv):
           % ("away", "revisited", "fresh", "rev tier", "new tier"))
     for away, a1, a2, t1, t2 in return_bias(2.0, [1, 2, 4, 8]):
         print("%6d %12.4f %12.4f %10s %10s" % (away, a1, a2, t1, t2))
+    print()
+    print("TWO RATES -- what a heat-keyed input depression would buy.")
+    print("Positive advantage means revisiting is still EASIER.")
+    print("%5s %11s %9s %11s %11s"
+          % ("tick", "activation", "heat", "depressed", "advantage"))
+    for k, act, heat, dep, adv in two_rates(2.0, 12):
+        print("%5d %11.4f %9.4f %11.4f %+11.4f"
+              % (k, act, heat, dep, adv))
     return 0
 
 
