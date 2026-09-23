@@ -74,6 +74,7 @@ class _Config(ctypes.Structure):
         ("promote_after", ctypes.c_int),
         ("lease_max_ticks", ctypes.c_int),
         ("kwta_temp", ctypes.c_double),
+        ("beta", ctypes.c_double),
         ("surprise_floor", ctypes.c_double),
         ("gate_tonic", ctypes.c_double),
         ("gate_threshold", ctypes.c_double),

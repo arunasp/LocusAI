@@ -140,6 +140,7 @@ int locus_config_layout(size_t *out, int max)
         offsetof(LocusConfig, promote_after),
         offsetof(LocusConfig, lease_max_ticks),
         offsetof(LocusConfig, kwta_temp),
+        offsetof(LocusConfig, beta),
         offsetof(LocusConfig, surprise_floor),
         offsetof(LocusConfig, gate_tonic),
         offsetof(LocusConfig, gate_threshold),
@@ -168,6 +169,7 @@ LocusConfig locus_config_default(void)
     c.promote_after = 3;
     c.lease_max_ticks = 8;
     c.kwta_temp = 0.1;
+    c.beta = 0.1;
     c.surprise_floor = 0.1;
     c.gate_tonic = 1.0;
     c.gate_threshold = 0.5;
@@ -529,6 +531,49 @@ static int conflicts_with(const LocusStore *s, uint8_t klass, uint32_t held)
     return 0;
 }
 
+/* Total activation of the traces a trace competes with: used, not
+ * pinned, not archived. Computed per tick rather than carried, because
+ * a carried total is a second copy of the state it summarises. */
+/* COMPETITION IS WITHIN A PATHWAY, NOT ACROSS THEM. One pool means a
+ * saturated focal load silences everything else -- measured: seven
+ * declarative winners and nothing left for anything watching the
+ * surroundings. Biology separates the maps instead: interference is
+ * strongest between SIMILAR representations (Desimone & Duncan 1995),
+ * and a goal-directed set runs alongside a stimulus-driven monitor
+ * rather than starving it (Corbetta & Shulman 2002). The pathways are
+ * already the maps here: declarative, procedural, instinct.
+ *
+ * So each pathway carries its own capacity window, and a background
+ * pathway keeps its own however busy the foreground is. */
+static double competing_total(const LocusStore *s, LocusPathway pathway)
+{
+    double total = 0.0;
+    for (int i = 0; i < s->capacity; i++) {
+        const Slot *t = &s->slots[i];
+        if (t->used && !t->pinned && t->tier != LOCUS_TIER_ARCHIVE
+            && t->path == pathway)
+            total += t->activation;
+    }
+    return total;
+}
+
+/* What a trace is WORTH against the rest, which is what selection reads.
+ * The stored activation is never divided -- normalising the state itself
+ * would compound every tick. Same shape as Field.step's divisive term. */
+static double effective_against(const LocusStore *s, const Slot *t,
+                                double others)
+{
+    return t->activation / (1.0 + s->cfg.beta * others);
+}
+
+static double effective(const LocusStore *s, const Slot *t, double total)
+{
+    double others = total - t->activation;
+    if (others < 0.0)
+        others = 0.0;
+    return t->activation / (1.0 + s->cfg.beta * others);
+}
+
 static void enforce_kwta(LocusStore *s)
 {
     int idx[LOCUS_KWTA_MAX];
@@ -543,7 +588,10 @@ static void enforce_kwta(LocusStore *s)
         if (!t->used || t->pinned || t->tier != LOCUS_TIER_ACTIVE)
             continue;
         idx[n] = i;
-        act[n] = t->activation;
+        /* Ranked against its OWN pathway: the noisy draw below picks
+         * among peers, and a declarative trace is not a peer of an
+         * instinct one. */
+        act[n] = effective(s, t, competing_total(s, t->path));
         n++;
     }
     /* Room in the active set is not permission to co-occur: an
@@ -646,16 +694,50 @@ void locus_tick(LocusStore *s)
      * synaptic scaling normalises against a neuron's own inputs. An
      * empty population demotes nothing, since a mean of nothing is not a
      * boundary. */
+    double won[3] = { 0.0, 0.0, 0.0 };
+
+    /* WHO WINS, settled strongest-first, PER PATHWAY. Each candidate is weighed
+     * against the activation already admitted, so admitting a winner
+     * raises the bar for the next -- which is what makes the set size
+     * a consequence of interference rather than of active_k. */
+    uint8_t promoted[LOCUS_KWTA_MAX] = { 0 };
+    uint8_t done[3] = { 0, 0, 0 };
+    for (int round = 0; round < s->capacity; round++) {
+        int best = -1;
+        for (int i = 0; i < s->capacity && i < LOCUS_KWTA_MAX; i++) {
+            const Slot *t = &s->slots[i];
+            if (!t->used || t->pinned || promoted[i])
+                continue;
+            if (t->tier == LOCUS_TIER_ARCHIVE || done[t->path])
+                continue;
+            if (best < 0 || t->activation > s->slots[best].activation)
+                best = i;
+        }
+        if (best < 0)
+            break;
+        const Slot *b = &s->slots[best];
+        LocusPathway p = b->path;
+        if (b->activation / (1.0 + s->cfg.beta * won[p]) < 1.0) {
+            /* This pathway is full; the others are still open. */
+            done[p] = 1;
+            continue;
+        }
+        promoted[best] = 1;
+        won[p] += b->activation;
+    }
+
     double sum = 0.0, lo = 0.0, hi = 0.0;
     int live = 0;
     for (int i = 0; i < s->capacity; i++) {
         const Slot *t = &s->slots[i];
         if (t->used && !t->pinned && t->tier != LOCUS_TIER_ARCHIVE) {
-            if (!live || t->activation < lo)
-                lo = t->activation;
-            if (!live || t->activation > hi)
-                hi = t->activation;
-            sum += t->activation;
+            double e = effective(s, t,
+                                 competing_total(s, t->path));
+            if (!live || e < lo)
+                lo = e;
+            if (!live || e > hi)
+                hi = e;
+            sum += e;
             live++;
         }
     }
@@ -677,9 +759,17 @@ void locus_tick(LocusStore *s)
         Slot *t = &s->slots[i];
         if (!t->used || t->pinned)
             continue;
-        if (t->activation >= 1.0 && t->tier == LOCUS_TIER_EPISODIC)
+        /* Promotion is competed, and competition SETTLES: a trace is
+         * measured against the winners so far, strongest first, not
+         * against every other candidate at once. Measured against all
+         * at once, eight equally cued traces each fell below the unit
+         * and NONE promoted -- a crowd silencing itself, which is the
+         * opposite of what lateral inhibition does. Settling gives the
+         * seven that fit and refuses the eighth. */
+        double e = effective_against(s, t, won[t->path]);
+        if (t->tier == LOCUS_TIER_EPISODIC && promoted[i])
             t->tier = LOCUS_TIER_ACTIVE;
-        else if (spread && t->activation < boundary &&
+        else if (spread && e < boundary &&
                  t->tier != LOCUS_TIER_ARCHIVE && t->leases == 0)
             t->tier = LOCUS_TIER_ARCHIVE;
     }

@@ -112,6 +112,17 @@ typedef struct {
      * set use. Higher values widen how often a weaker trace wins. */
     double kwta_temp;
 
+    /* LATERAL COMPETITION. A trace's activation is its own; what it is
+     * worth for SELECTION is that activation divided by what everything
+     * else is doing -- the divisive term Field.step already runs, with
+     * beta the same quantity there. Without it the active set is a
+     * truncated list: measured, 32 simultaneously cued traces were each
+     * as strong as one, and capacity was whatever active_k said.
+     * MEASURED band: 0.1 to 0.5 holds the field in the biological 1-2%
+     * active range (participation ratio 2.93% down to 0.54%).
+     * active_k remains, as a BOUND on the set rather than its size. */
+    double beta;
+
     /* Repetition alone is not the promotion trigger. A re-application only
      * counts toward a habit when its outcome was unsurprising -- prediction
      * error at or below this floor. */

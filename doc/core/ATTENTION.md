@@ -31,9 +31,48 @@ Built: `active_k` in `LocusConfig` bounds the active set, and
 `enforce_kwta` resolves the competition. `LOCUS_KWTA_MAX` bounds the
 noisy path's working set.
 
-Open: `active_k` is configured. Biology sets it by interference among
-what is active, so it should fall out of the field's own dynamics
-rather than be chosen.
+Built, and it now falls out of interference rather than being set.
+`competing_total` sums the activation a trace competes with and
+`effective` divides by it, the same divisive term `Field.step` runs,
+with `beta` the same quantity. Promotion is settled strongest-first
+against the winners so far, so admitting one raises the bar for the
+next. `active_k` remains as a bound on the working set.
+
+Measured, cueing n traces at equal strength with active_k and slots
+set high enough that neither binds: 1, 2, 4 promote in full, then the
+set levels off at SEVEN however many are cued (8, 16, 32 all give 7).
+The limit is arithmetic, not chosen: a/(1 + beta*won) >= 1.
+
+What this replaced, measured before the change: 32 cued traces were
+each as strong as one, and the active count simply tracked the cue
+count -- `enforce_kwta` truncated a list rather than resolving a
+competition.
+
+## 2b. One window per map, in priority order
+
+A single pool is wrong for a reason observation makes plain: focused
+work, background sensing and internal reasoning run AT THE SAME TIME,
+in priority order, not in turns. With one pool a saturated focal load
+silences the rest -- measured: seven declarative winners and nothing
+left over.
+
+Biology separates the maps rather than sharing one budget:
+interference is strongest between similar representations (Desimone &
+Duncan 1995), a goal-directed dorsal set runs alongside a
+stimulus-driven ventral monitor (Corbetta & Shulman 2002), and the
+short-term stores for different content do not compete with each other
+(Baddeley 2000).
+
+Built: competition is WITHIN a pathway. Declarative, procedural and
+instinct each carry their own capacity window, so a busy foreground
+cannot starve a monitor. Measured with a declarative load of 1 to 32
+against two procedural and one instinct trace: declarative saturates
+at 7, procedural stays 2, instinct stays 1, unchanged at every load.
+
+Open: PRIORITY between the pools is not represented. Nothing lets a
+salient background event break through into the focal set, which is
+the ventral network's circuit-breaker role; `note_salient` and the
+phasic gate are the pieces that would carry it.
 
 ## 3. The selection window — biased competition
 
