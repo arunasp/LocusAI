@@ -56,6 +56,8 @@ at the sizes this project is aiming at, an explicit edge list for every
 possible pair is the dominant cost and almost all of it is zero.
 """
 
+INF = float("inf")
+
 
 class Plasticity:
     """Eligibility traces and gated weight updates over pair keys.
@@ -194,6 +196,21 @@ class Plasticity:
         how plastic it is; unlisted sources get 1. Without these
         arguments, behaviour is unchanged.
         """
+        # THE GATE IS THIS BRANCH, not the arithmetic below it. With a
+        # zero modulator `dw = rate * tag * 0.0` also comes out zero, so
+        # the two agree today and removing this line changes nothing --
+        # which is exactly why it is worth stating: the property must
+        # not rest on a multiplication. Any term added inside the loop
+        # that does not itself carry the modulator (a decay, a floor, a
+        # bias) would move weights with NO OUTCOME, and only this branch
+        # stops it. `test_a_zero_modulator_never_looks_at_the_tags`
+        # binds it, so the line cannot be deleted as redundant.
+        if modulator != modulator or modulator in (INF, -INF):
+            # A non-finite modulator is NOT caught by the zero test and
+            # would write NaN into every tagged weight, silently and
+            # irreversibly. Refused rather than propagated.
+            raise ValueError("modulator must be finite, got %r"
+                             % (modulator,))
         if modulator == 0.0:
             return 0
         touched = 0

@@ -212,6 +212,51 @@ class StreamsNotImports(unittest.TestCase):
                             "as_kernel handed out shared state")
 
 
+class TheGateIsABranchNotArithmetic(unittest.TestCase):
+    """Three-factor means activity alone changes nothing, and that must
+    be enforced by a REFUSAL rather than by multiplying by zero.
+
+    `dw = rate * tag * 0.0` happens to be zero today, so deleting the
+    guard changes no behaviour and no test noticed -- found by
+    `make mutate`. A future term inside the loop that does not carry the
+    modulator would then move weights with no outcome. These tests bind
+    the branch itself, so it cannot be removed as redundant.
+    """
+
+    def tagged(self):
+        p = Plasticity(rate=0.5)
+        p.observe([1.0, 1.0, 0.0], threshold=0.1)
+        return p
+
+    def test_a_zero_modulator_never_looks_at_the_tags(self):
+        class Spy(dict):
+            reads = 0
+
+            def items(self):
+                Spy.reads += 1
+                return super().items()
+
+        p = self.tagged()
+        p.traces = Spy(p.traces)
+        self.assertEqual(p.consolidate(0.0), 0)
+        self.assertEqual(Spy.reads, 0,
+                         "a zero modulator walked the tags -- the guard "
+                         "is gone and only the arithmetic is stopping it")
+        self.assertGreater(p.consolidate(1.0), 0)
+        self.assertGreater(Spy.reads, 0, "the spy never saw a real pass")
+
+    def test_a_non_finite_modulator_is_refused(self):
+        # NaN is not equal to 0.0, so it passes the zero test and writes
+        # NaN into every tagged weight -- silent and irreversible.
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            p = self.tagged()
+            with self.assertRaises(ValueError):
+                p.consolidate(bad)
+            self.assertFalse(
+                any(w != w for w in p.weights.values()),
+                "a weight was poisoned before the refusal")
+
+
 class Construction(unittest.TestCase):
 
     def test_decay_must_be_a_proper_fraction(self):

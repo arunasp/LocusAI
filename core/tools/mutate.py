@@ -96,15 +96,27 @@ MUTATIONS = [
      "    if False:",
      ["test_assemble"]),
 
-    # The ZERO-modulator case is held TWICE -- by the early return and,
-    # independently, by dw = rate * tag * 0.0 -- so mutating either alone
-    # leaves the property standing. The substantive claim is that the
-    # modulator carries the magnitude and the sign at all.
+    # The zero-modulator guard USED to survive its own deletion, because
+    # dw = rate * tag * 0.0 is zero anyway. A property resting on a
+    # multiplication is not enforced, so the branch is now bound by a
+    # test that watches whether the tags are walked at all.
     ("three-factor: the modulator carries magnitude and sign",
      "py/locus/plasticity.py",
      "            dw = self.rate * tag * modulator",
      "            dw = self.rate * tag",
      ["test_plasticity", "test_cycle"]),
+
+    ("a zero modulator does not even walk the tags",
+     "py/locus/plasticity.py",
+     "        if modulator == 0.0:\n            return 0",
+     "        if False:\n            return 0",
+     ["test_plasticity"]),
+
+    ("a non-finite modulator is refused, not propagated",
+     "py/locus/plasticity.py",
+     "        if modulator != modulator or modulator in (INF, -INF):",
+     "        if False:",
+     ["test_plasticity"]),
 
     ("promotion needs a winner set that RECURRED (C)",
      "src/store.c",
