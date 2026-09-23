@@ -501,15 +501,18 @@ bg: export BG_CMD = $(value CMD)
 bg: ## Run CMD with all output in build/JOB.log, ending in an exit=N line
 	$(if $(and $(JOB),$(CMD)),,$(error bg: JOB and CMD are required))
 	@mkdir -p $(BUILD)/jobs
+	@rm -f $(BUILD)/$(JOB).device_s
 	@{ echo "[start] $$(date -u +%FT%TZ) $$BG_CMD"; \
 	   printf '{"job":"%s","pid":%s,"log":"%s","start":%s}\n' \
 	     "$(JOB)" "$$$$" "$(BUILD)/$(JOB).log" "$$(date -u +%s)" \
 	     > $(BUILD)/jobs/$(JOB).json; \
 	   $(PYTHON3) tools/perfmon.py record $(BUILD)/$(JOB).perf.csv & pm=$$!; \
-	   sh -c "$$BG_CMD"; rc=$$?; \
+	   LOCUS_DEVICE_S=$(BUILD)/$(JOB).device_s sh -c "$$BG_CMD"; rc=$$?; \
 	   kill $$pm; wait $$pm; \
 	   echo "[end] $$(date -u +%FT%TZ)"; \
-	   $(PYTHON3) tools/perfmon.py summary $(BUILD)/$(JOB).perf.csv; \
+	   dev=$$(awk '{s+=$$1} END {printf "%.1f", s+0}' \
+	           $(BUILD)/$(JOB).device_s 2>/dev/null); \
+	   $(PYTHON3) tools/perfmon.py summary $(BUILD)/$(JOB).perf.csv $$dev; \
 	   echo "exit=$$rc"; } \
 		> $(BUILD)/$(JOB).log 2>&1
 

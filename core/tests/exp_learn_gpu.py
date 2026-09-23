@@ -322,7 +322,19 @@ def device_run(binary, enc, train, val, test, kind, opts, know=None,
         f.write(struct.pack("<i", len(val)))
         f.write(struct.pack("<i", len(LAMS)) + array("d", LAMS).tobytes())
     cmd = [binary, inp, out] + ([know] if know else [])
+    # DEVICE SECONDS, recorded where the device call actually happens.
+    # `perfmon summary` has always accepted a DEVICE_S argument and
+    # nothing ever passed one, so every job reported CPU cores against
+    # a run whose point was the GPU. Wall minus this is the SERIAL HOST
+    # FRACTION -- packing, writing the schedule, reading results -- which
+    # is the number that says whether an optimisation is worth making.
+    t_dev = time.time()
     r = subprocess.run(cmd, capture_output=True, text=True)
+    t_dev = time.time() - t_dev
+    tally = os.environ.get("LOCUS_DEVICE_S")
+    if tally:
+        with open(tally, "a") as fh:
+            fh.write("%.3f\n" % t_dev)
     os.unlink(inp)
     if r.returncode != 0:
         raise SystemExit("FAIL: %s exited %d: %s" % (binary, r.returncode,
