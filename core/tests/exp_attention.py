@@ -102,6 +102,33 @@ def persistence(cue_keys, ticks, capacity=64, active_k=8):
     return out
 
 
+def capacity(counts, active_k=64, capacity_slots=256):
+    """How many traces stay ACTIVE as the cued population grows.
+
+    ATTENTION.md's capacity window is ~4 items limited by INTERFERENCE
+    rather than by storage (Cowan 2001), and records that `active_k` is
+    configured here instead. This measures which of the two is binding:
+    with active_k set well above every cue count, an interference limit
+    would show as the active count LEVELLING OFF, and a configured
+    bound would show as the active count tracking the cue count.
+
+    `active_k` 64 and 256 slots are BOUNDS chosen so neither can be the
+    limit being measured.
+    """
+    out = []
+    for n in counts:
+        with S.Store(capacity=capacity_slots, active_k=active_k) as st:
+            for i in range(1, n + 1):
+                st.put(i, b"c", S.Pathway.DECLARATIVE, 1.0)
+                st.excite(i, 2.0)
+            st.tick()
+            act = sum(1 for i in range(1, n + 1)
+                      if st.tier(i) == S.Tier.ACTIVE)
+            peak = max(st.activation(i) for i in range(1, n + 1))
+        out.append((n, act, peak))
+    return out
+
+
 def main(argv):
     if not argv:
         print(__doc__)
@@ -139,6 +166,12 @@ def main(argv):
     print("%6s %10s %8s %12s" % ("ticks", "kept", "active", "max act"))
     for k, keep, n, peak in persistence(list(range(1, 9)), 8):
         print("%6d %9.2f%% %8d %12.4f" % (k, 100.0 * keep, n, peak))
+    print()
+    print("CAPACITY -- active traces as the cued population grows, with")
+    print("active_k and slots set high enough that neither binds.")
+    print("%6s %10s %12s" % ("cued", "active", "max act"))
+    for n, act, peak in capacity([1, 2, 4, 8, 16, 32]):
+        print("%6d %10d %12.4f" % (n, act, peak))
     return 0
 
 
