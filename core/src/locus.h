@@ -13,6 +13,9 @@
 
 /* Bitmask width for trace classes: a class id is a bit position, and 0
  * means unclassified. */
+/* A BOUND set by the representation: conflicts are a uint32_t bitmask,
+ * so 32 is the width of that word rather than a judgement about how
+ * many action classes a constitution needs. */
 #define LOCUS_CLASS_MAX 32
 
 /* Moments of active-set history kept for the promotion trigger. A habit

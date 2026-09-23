@@ -84,6 +84,37 @@ class Field:
     def __init__(self, n, kernel, rho=1.0, g=0.5, beta=0.1, leak=0.3,
                  dt=1.0, a_max=10.0, floor=1e-12, noise=0.0, seed=0,
                  areas=None):
+        """Where these defaults come from, value by value.
+
+        beta 0.1 -- MEASURED band, not a guess: the biological 1-2%%
+        active band sits between 0.1 and 0.5 by participation ratio
+        (2.93%% down to 0.54%%), and above 2.0 it saturates and does
+        nothing further. An operating point inside a measured band, and
+        the open question is what SETS the point within it.
+
+        rho 1.0 -- the NEUTRAL value: activation is held exactly, so
+        self-excitation neither grows nor decays the state on its own
+        and every other term is read against it.
+
+        g 0.5, leak 0.3, trace-like ratios -- INITIAL VALUES. The open
+        question is the one the roadmap names: each should be a set
+        point with feedback rather than a number, so what corrects them
+        is unanswered.
+
+        dt 1.0 -- the NEUTRAL step. Not a biological quantity at all;
+        one integration step, so nothing is scaled by it.
+
+        a_max 10.0 -- a BOUND against runaway, not a claim about the
+        dynamics; `share()` exists precisely so measurements do not
+        depend on it.
+
+        floor 1e-12 -- a BOUND below which a contribution is not worth
+        the multiply; it is an arithmetic cutoff, not a threshold on
+        anything meaningful.
+
+        noise 0.0 and seed 0 -- NEUTRAL defaults: spontaneous activity
+        OFF unless asked for, so no run gains randomness by accident.
+        """
         # THE NUMBERS ARE CHECKED, not assumed. Shape was validated
         # here and the parameters were not, so an out-of-range value
         # changed the MEANING of the dynamics instead of failing: a
@@ -347,7 +378,12 @@ class Field:
         return list(nxt)
 
     def cycle(self, fast=7):
-        """One slow period: ``fast`` fast updates. Returns the state
+        """One slow period: ``fast`` fast updates. `fast` 7 is the
+        theta/gamma NESTING RATIO taken from the literature, not a claim
+        about how many items a cycle represents -- that number is
+        genuinely contested (see this module's header), so it is an
+        INITIAL VALUE and the open question is which account is
+        right. Returns the state
         history so a caller can see whether activation settled within the
         period rather than assuming it did."""
         if fast < 1:

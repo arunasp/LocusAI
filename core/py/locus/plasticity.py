@@ -74,6 +74,15 @@ class Plasticity:
 
     def __init__(self, trace_decay=0.7, rate=0.1, trace_floor=1e-4,
                  w_max=5.0):
+        """trace_decay 0.7 and rate 0.1 are INITIAL VALUES: the decay
+        sets how long a tag stays eligible and the rate how far one
+        outcome moves a weight, and neither is measured here. The open
+        question for both is the roadmap's -- a set point with feedback
+        rather than a constant. trace_floor 1e-4 is a BOUND below which
+        a tag is dropped rather than carried, arithmetic not biology.
+        w_max 5.0 is a BOUND against runaway, paired with the clip in
+        knowledge.py.
+        """
         if not 0.0 < trace_decay < 1.0:
             raise ValueError("trace_decay must be in (0, 1)")
         self.trace_decay = trace_decay
@@ -92,6 +101,10 @@ class Plasticity:
     # ------------------------------------------------------------ fast --
     def observe(self, activation, threshold=0.0):
         """Decay every tag, then add coincident pre*post for active pairs.
+
+        `threshold` 0.0 is the NEUTRAL default: every non-zero
+        activation counts, so the caller decides what counts as active
+        rather than inheriting a cutoff from here.
 
         Called on the FAST period. Reads activation and nothing else, and
         deliberately does NOT touch weights -- that separation is the

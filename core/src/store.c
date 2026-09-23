@@ -20,17 +20,32 @@ static int usable(double v)
     return !isnan(v) && !isinf(v);
 }
 
-/* Ticks a retrieved trace may stay labile before it is counted as lost. */
+/* Ticks a retrieved trace may stay labile before it is counted as lost.
+ * An INITIAL VALUE, not measured: reconsolidation in the literature is
+ * a window of hours, and a tick here is not a unit of time, so the open
+ * question is what a tick should correspond to before this can be set
+ * from anything but convenience. */
 #define LOCUS_LABILE_TICKS 2
 
-/* Activation below which an unpinned declarative trace demotes a tier. */
+/* Activation below which an unpinned declarative trace demotes a tier.
+ * An INITIAL VALUE. The open question is whether residency should be a
+ * threshold at all rather than a RANK against the current distribution:
+ * a fixed floor means something different in a store of 72,886 units
+ * and one of 191,912, which is the same defect measured in the sleep
+ * trigger (see doc/core/ROADMAP.md standing constraints). */
 #define LOCUS_DEMOTE_FLOOR 0.05
 
-/* Heat decays slower than activation: usage history outlives the moment. */
+/* Heat decays slower than activation: usage history outlives the moment.
+ * The RATIO is the claim and it is structural; the 0.25 itself is an
+ * INITIAL VALUE and the open question is what sets the separation
+ * between the two timescales. */
 #define LOCUS_HEAT_DAMP 0.25
 
 /* Stack-allocated working set for noisy competition; larger stores fall back
- * to deterministic selection rather than allocating on the tick path. */
+ * to deterministic selection rather than allocating on the tick path.
+ * A BOUND on stack use, not a claim about the substrate: it limits how
+ * many contenders the noisy path can hold, and a larger store degrades
+ * to the deterministic path rather than failing. */
 #define LOCUS_KWTA_MAX 256
 
 typedef struct {
