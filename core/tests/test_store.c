@@ -311,6 +311,76 @@ static void test_residency_is_relative_to_the_population(void)
     locus_store_destroy(s);
 }
 
+/* Priority between pools is an INTERRUPT, not a ranking: at baseline
+ * tone each pathway competes alone, and a salient event couples them
+ * transiently so the foreground gives up slots. */
+static int active_of(LocusStore *s, int lo, int hi, LocusPathway want)
+{
+    int n = 0;
+    for (int k = lo; k <= hi; k++)
+        if (locus_trace_tier(s, k) == LOCUS_TIER_ACTIVE
+            && locus_trace_pathway(s, k) == (int)want)
+            n++;
+    return n;
+}
+
+static int focal_after(double salience, double bg_excite)
+{
+    LocusConfig cfg = locus_config_default();
+    cfg.capacity = 256;
+    cfg.active_k = 64;
+    LocusStore *s = locus_store_create(&cfg);
+    for (int k = 1; k <= 16; k++) {
+        locus_put(s, k, LOCUS_PATH_DECLARATIVE, "f", 1, 1.0);
+        locus_excite(s, k, 2.0);
+    }
+    locus_put(s, 900, LOCUS_PATH_PROCEDURAL, "b", 1, 1.0);
+    locus_excite(s, 900, bg_excite);
+    if (salience > 0.0)
+        locus_note_salient(s, 900, salience);
+    locus_tick(s);
+    int focal = active_of(s, 1, 16, LOCUS_PATH_DECLARATIVE);
+    locus_store_destroy(s);
+    return focal;
+}
+
+static void test_a_salient_background_event_breaks_through(void)
+{
+    /* A LOUD background trace takes nothing: without salience the pools
+     * are independent however strong the other pool's traces are. */
+    ok(focal_after(0.0, 2.0) == focal_after(0.0, 6.0),
+       "a strong background trace cost the foreground slots without "
+       "any salience");
+    /* A SALIENT one does, and more of it the louder the event. */
+    int quiet = focal_after(0.0, 2.0);
+    int some = focal_after(2.0, 2.0);
+    int loud = focal_after(6.0, 2.0);
+    ok(some < quiet, "a salient event did not break into the focal set");
+    ok(loud < some, "breakthrough did not scale with salience");
+}
+
+static void test_instinct_sits_outside_the_capacity_window(void)
+{
+    /* Recorded because it invalidated a measurement: locus_put pins an
+     * instinct trace ACTIVE, and pinned traces are excluded from the
+     * competition entirely. A reflex does not queue for attention --
+     * which also means the background MONITOR is procedural, not
+     * instinct. */
+    LocusConfig cfg = locus_config_default();
+    cfg.capacity = 64;
+    LocusStore *s = locus_store_create(&cfg);
+    locus_put(s, 1, LOCUS_PATH_INSTINCT, "i", 1, 1.0);
+    for (int k = 10; k < 30; k++) {
+        locus_put(s, k, LOCUS_PATH_DECLARATIVE, "f", 1, 1.0);
+        locus_excite(s, k, 2.0);
+    }
+    locus_tick(s);
+    locus_tick(s);
+    ok(locus_trace_tier(s, 1) == LOCUS_TIER_ACTIVE,
+       "an instinct trace lost its slot to a crowded foreground");
+    locus_store_destroy(s);
+}
+
 static void test_a_non_finite_input_is_refused_at_every_entry(void)
 {
     LocusConfig cfg = locus_config_default();
@@ -614,6 +684,8 @@ int main(void)
     test_prefetch_advisory();
     test_lease_blocks_eviction();
     test_residency_is_relative_to_the_population();
+    test_a_salient_background_event_breaks_through();
+    test_instinct_sits_outside_the_capacity_window();
     test_a_non_finite_input_is_refused_at_every_entry();
     test_promotion_needs_a_recurring_winner_set();
     test_kwta_respects_incompatibility();

@@ -69,10 +69,43 @@ cannot starve a monitor. Measured with a declarative load of 1 to 32
 against two procedural and one instinct trace: declarative saturates
 at 7, procedural stays 2, instinct stays 1, unchanged at every load.
 
-Open: PRIORITY between the pools is not represented. Nothing lets a
-salient background event break through into the focal set, which is
-the ventral network's circuit-breaker role; `note_salient` and the
-phasic gate are the pieces that would carry it.
+## 2c. Priority between pools is an interrupt, not a ranking
+
+Phasic noradrenaline interrupts ongoing network activity and
+reorganises which network determines the output (Bouret & Sara 2005;
+Dayan & Yu 2006). Tonic level sets the regime: moderate while engaged
+in a focused task and filtering, high while uncommitted and responsive
+to unanticipated change. So the pools are not ranked -- one scalar
+decides how porous they are, and it is transient.
+
+Built: the phasic component of tone IS the coupling between pools. At
+baseline each pathway settles alone; while a salient event holds tone
+above baseline, the winners of one pool raise the bar in the others,
+so the foreground gives up slots. `note_salient` drives it and
+`gate_decay` ends it without anything resetting it.
+
+Measured, sixteen declarative traces against one procedural:
+
+  salience 0, background at 2.0   tone 1.00   focal 7
+  salience 0, background at 6.0   tone 1.00   focal 7
+  salience 2, background at 2.0   tone 2.00   focal 6
+  salience 6, background at 2.0   tone 4.00   focal 4
+
+A merely STRONG background trace costs the foreground nothing; a
+SALIENT one costs it slots, and more of them the louder the event.
+
+Not built, deliberately: whether breakthrough should require the event
+to match current top-down settings. Contingent capture (Folk et al.
+1992) says yes and the additional-singleton results say no, and load
+theory's account of what a busy foreground filters out has recent
+replication failures. The interrupt is undisputed; the condition on it
+is not, and a disputed result does not belong in the substrate.
+
+INSTINCT SITS OUTSIDE ALL OF THIS: `locus_put` pins an instinct trace
+ACTIVE, and pinned traces are excluded from the competition. A reflex
+does not queue for attention. The consequence for the three windows
+above: the background MONITOR is procedural, not instinct -- measuring
+it as instinct measures a pinned trace and proves nothing.
 
 ## 3. The selection window — biased competition
 

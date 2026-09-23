@@ -547,14 +547,41 @@ static int conflicts_with(const LocusStore *s, uint8_t klass, uint32_t held)
  * pathway keeps its own however busy the foreground is. */
 static double competing_total(const LocusStore *s, LocusPathway pathway)
 {
-    double total = 0.0;
+    /* PRIORITY BETWEEN POOLS IS AN INTERRUPT, NOT A RANKING. Phasic
+     * noradrenaline is a network reset: it interrupts ongoing activity
+     * and reorganises which network holds the output (Bouret & Sara
+     * 2005; Dayan & Yu 2006, "a neural interrupt signal for unexpected
+     * events"). Tonic level sets the regime -- moderate while engaged
+     * and filtering, high while uncommitted and responsive to
+     * unanticipated change -- so one scalar decides how porous the
+     * pools are, and that scalar already exists here as tone.
+     *
+     * So the phasic component IS the coupling: at baseline tone each
+     * pathway competes alone, and while a salient event holds tone
+     * above baseline the pools couple and the strongest trace across
+     * them wins. The reset is transient by construction, because
+     * phasic decays back (gate_decay) without anything resetting it.
+     *
+     * NOT IMPLEMENTED, deliberately: whether breakthrough should
+     * require the event to MATCH current top-down settings. Contingent
+     * capture (Folk et al. 1992) says yes, the additional-singleton
+     * results say no, and load theory's account of what a busy
+     * foreground filters out has recent replication failures. An
+     * undisputed interrupt is worth building; a disputed condition on
+     * it is not. */
+    /* The coupling lives in the SETTLING pass only. Adding it here too
+     * survived its own mutation -- removing it changed no test -- and
+     * an unbound term is inert whatever it looks like it does: within
+     * one pathway it scales every trace and the boundary alike, so the
+     * comparison it feeds is unchanged. */
+    double own = 0.0;
     for (int i = 0; i < s->capacity; i++) {
         const Slot *t = &s->slots[i];
         if (t->used && !t->pinned && t->tier != LOCUS_TIER_ARCHIVE
             && t->path == pathway)
-            total += t->activation;
+            own += t->activation;
     }
-    return total;
+    return own;
 }
 
 /* What a trace is WORTH against the rest, which is what selection reads.
@@ -717,7 +744,14 @@ void locus_tick(LocusStore *s)
             break;
         const Slot *b = &s->slots[best];
         LocusPathway p = b->path;
-        if (b->activation / (1.0 + s->cfg.beta * won[p]) < 1.0) {
+        /* Coupled by the same phasic term: during an interrupt the
+         * winners of every pool raise the bar for the next candidate,
+         * so a salient trace can take a slot the foreground held. */
+        double against = won[p];
+        for (int j = 0; j < 3; j++)
+            if (j != (int)p)
+                against += s->phasic * won[j];
+        if (b->activation / (1.0 + s->cfg.beta * against) < 1.0) {
             /* This pathway is full; the others are still open. */
             done[p] = 1;
             continue;
