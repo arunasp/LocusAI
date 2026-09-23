@@ -232,7 +232,15 @@ Present state:
   already admitted. Room in the active set is NOT permission to co-occur:
   the exclusion applies even when the count is under the bound. With no
   conflicts declared, selection behaves exactly as before.
-- `AssociativeGraph.link()` is public and unconstrained.
+- DONE, as far as this can be done. `AssociativeGraph` takes a class map
+  and a conflict relation at construction, both held read-only, and
+  REFUSES a link between incompatible classes -- returning False rather
+  than raising, since a refused association is a normal event in a
+  constrained system. An incompatible pair reached INDIRECTLY, over two
+  or more permitted links, cannot be stopped by any rule on single
+  links, so `spread()` RECORDS it instead. That is the Known limits
+  position made concrete: prevention where a single link decides it,
+  detection where only the whole path does.
 - DONE. `DecisionTrace` (`py/locus/decisions.py`) records every
   dispatch, refusals included, and renders them for a person. The
   records are frozen and handed out as a copy, so the audited layer
