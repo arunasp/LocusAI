@@ -2,6 +2,8 @@
 
 #include "locus.h"
 
+#include <stddef.h>
+
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,6 +52,37 @@ struct LocusStore {
     double phasic; /* decaying component of modulatory tone */
     uint32_t rng;
 };
+
+size_t locus_config_size(void)
+{
+    return sizeof(LocusConfig);
+}
+
+int locus_config_layout(size_t *out, int max)
+{
+    static const size_t off[] = {
+        offsetof(LocusConfig, capacity),
+        offsetof(LocusConfig, active_k),
+        offsetof(LocusConfig, decay),
+        offsetof(LocusConfig, capture_floor),
+        offsetof(LocusConfig, capture_gain),
+        offsetof(LocusConfig, capture_window),
+        offsetof(LocusConfig, promote_after),
+        offsetof(LocusConfig, lease_max_ticks),
+        offsetof(LocusConfig, kwta_temp),
+        offsetof(LocusConfig, surprise_floor),
+        offsetof(LocusConfig, gate_tonic),
+        offsetof(LocusConfig, gate_threshold),
+        offsetof(LocusConfig, gate_decay),
+        offsetof(LocusConfig, seed),
+        offsetof(LocusConfig, conflicts),
+    };
+    const int n = (int)(sizeof(off) / sizeof(*off));
+    if (out && max >= n)
+        for (int i = 0; i < n; i++)
+            out[i] = off[i];
+    return n;
+}
 
 LocusConfig locus_config_default(void)
 {

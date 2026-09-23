@@ -80,7 +80,8 @@ class _Config(ctypes.Structure):
         ("gate_decay", ctypes.c_double),
         ("seed", ctypes.c_uint32),
         # Mirrors LocusConfig exactly, including the trailing conflicts
-        # table: a mismatch here is silent memory corruption, not an error.
+        # table. _check_config_layout below verifies that at load: a
+        # mismatch here is silent memory corruption, not an error.
         ("conflicts", ctypes.c_uint32 * 32),
     ]
 
@@ -118,6 +119,44 @@ class _Stats(ctypes.Structure):
 def _default_lib_path():
     here = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(here, "..", "..", "build", "liblocus.so")
+
+
+class LayoutMismatch(RuntimeError):
+    """The ctypes mirror disagrees with the C struct it stands for."""
+
+
+def _check_config_layout(lib, mirror=None):
+    """Compare this module's _Config with the library's LocusConfig.
+
+    Checked rather than trusted, because the failure it prevents is not an
+    exception: a mirror one field short reads a neighbouring field's bytes
+    and the store runs on values nobody set. Size catches a missing or
+    added field, offsets catch reordering and padding.
+    """
+    mirror = mirror or _Config
+    lib.locus_config_size.restype = ctypes.c_size_t
+    lib.locus_config_layout.argtypes = [
+        ctypes.POINTER(ctypes.c_size_t), ctypes.c_int]
+    lib.locus_config_layout.restype = ctypes.c_int
+    want_size = int(lib.locus_config_size())
+    if ctypes.sizeof(mirror) != want_size:
+        raise LayoutMismatch(
+            "LocusConfig is %d bytes, this mirror is %d: a field was added, "
+            "removed or resized without updating %s"
+            % (want_size, ctypes.sizeof(mirror), __file__))
+    n = lib.locus_config_layout(None, 0)
+    buf = (ctypes.c_size_t * n)()
+    lib.locus_config_layout(buf, n)
+    names = [f[0] for f in mirror._fields_]
+    if len(names) != n:
+        raise LayoutMismatch(
+            "LocusConfig has %d fields, this mirror has %d" % (n, len(names)))
+    for name, want in zip(names, buf):
+        got = getattr(mirror, name).offset
+        if got != want:
+            raise LayoutMismatch(
+                "field %r sits at byte %d in LocusConfig and %d in this "
+                "mirror" % (name, want, got))
 
 
 def _bind(path):
@@ -177,6 +216,14 @@ def _bind(path):
         ctypes.c_double, ctypes.POINTER(ctypes.c_uint32),
         ctypes.POINTER(ctypes.c_uint8),
     ]
+    lib.locus_set_class.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint8]
+    lib.locus_set_class.restype = ctypes.c_int
+    lib.locus_class_of.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+    lib.locus_class_of.restype = ctypes.c_int
+    # Last, so a mismatched mirror fails here rather than at the first
+    # call that quietly reads the wrong bytes.
+    _check_config_layout(lib)
     return lib
 
 

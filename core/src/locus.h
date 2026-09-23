@@ -137,6 +137,18 @@ typedef struct {
  * procedural path is observable early. */
 LocusConfig locus_config_default(void);
 
+/* Layout of LocusConfig, so a binding can verify its own mirror instead of
+ * trusting it. A Python ctypes Structure that disagrees with this struct is
+ * silent memory corruption, not an error, so the binding checks at load.
+ *
+ * locus_config_size() is sizeof(LocusConfig). locus_config_layout() fills
+ * `out` with each field's byte offset in declaration order and returns the
+ * number of fields, or the count alone when out is NULL or max is too
+ * small. Offsets catch reordering and padding; size catches a missing or
+ * added field. */
+size_t locus_config_size(void);
+int locus_config_layout(size_t *out, int max);
+
 LocusStore *locus_store_create(const LocusConfig *cfg);
 void locus_store_destroy(LocusStore *s);
 
