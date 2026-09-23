@@ -64,17 +64,36 @@ class PreparedEqualsRebuilt(unittest.TestCase):
                          + len(EXTRA) - 1)
 
 
-class ReplayIsRefused(unittest.TestCase):
-    """With replay a file's batch is drawn against the episodes before
-    it, so appending changes draws that are already in the array."""
+class ReplayAppendsExactly(unittest.TestCase):
+    """The replay draw is one RNG stream consumed file by file, so an
+    appended file draws AFTER every earlier draw and carrying the state
+    forward must reproduce a full rebuild exactly.
 
-    def test_with_extra_refuses_a_replay_base(self):
+    This is the case that matters: the learner the ablations use has
+    replay on, so the non-replay path above is never taken by them.
+    """
+
+    def test_appending_under_replay_equals_rebuilding(self):
+        got = G.with_extra(G.prepare(FILES, replay=True), EXTRA)
+        main, online = G.schedule(FILES + [EXTRA], True)
+        self.assertEqual(list(got["main"]), list(main))
+        self.assertEqual(list(got["online"]), list(online))
+
+    def test_the_replay_batch_is_actually_there(self):
+        # Without it the arrays would match a NON-replay rebuild, and
+        # the test above would pass while proving nothing.
+        got = G.with_extra(G.prepare(FILES, replay=True), EXTRA)
+        plain, _ = G.schedule(FILES + [EXTRA], False)
+        self.assertNotEqual(list(got["main"]), list(plain))
+        self.assertGreater(len(got["main"]), len(plain))
+
+    def test_a_different_appended_file_gives_a_different_schedule(self):
         base = G.prepare(FILES, replay=True)
-        with self.assertRaises(ValueError):
-            G.with_extra(base, EXTRA)
+        one = G.with_extra(base, EXTRA)
+        two = G.with_extra(base, EXTRA + b"and more text here\n")
+        self.assertNotEqual(list(one["main"]), list(two["main"]))
 
     def test_replay_really_does_differ(self):
-        # If this ever stops being true the refusal above is pointless.
         plain, _ = G.schedule(FILES, False)
         replay, _ = G.schedule(FILES, True)
         self.assertNotEqual(list(plain), list(replay))

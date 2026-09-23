@@ -262,7 +262,7 @@ LAMS = [2.0 ** k for k in range(-24, 9)]
 KINDS = {"branch": 0, "cls": 1, "control": 2}
 
 
-def schedule(train, replay):
+def schedule(train, replay, want_state=False):
     """Training positions in learning order, as global offsets into the
     concatenated training bytes: (main store, online). With ``replay``
     each file's online positions are followed by the CLS replay batch,
@@ -284,7 +284,7 @@ def schedule(train, replay):
             main.extend(batch)
         earlier.extend(episodes)
         start += len(data)
-    return main, online
+    return (main, online, rnd.getstate()) if want_state else (main, online)
 
 
 def blob(files):
@@ -295,7 +295,7 @@ def blob(files):
     return b"".join(files), starts
 
 
-def prepare(train, replay=False):
+def prepare(train, replay=False):  # noqa: C901
     """The parts of a device run that depend only on the TRAIN SET.
 
     An ablation runs the same corpus many times with one file appended,
@@ -308,33 +308,48 @@ def prepare(train, replay=False):
     Only valid WITHOUT replay -- see with_extra().
     """
     tr, tfs = blob(train)
-    main, online = schedule(train, replay)
+    main, online, state = schedule(train, replay, want_state=True)
     return {"tr": tr, "tfs": tfs, "main": main, "online": online,
-            "n": len(train), "replay": replay}
+            "n": len(train), "replay": replay, "state": state}
 
 
 def with_extra(base, extra):
     """`base` with one more training file appended.
 
-    Exact without replay: schedule() gives each file a consecutive range
-    of global offsets, so a file added at the end adds its own range and
-    changes nothing before it. WITH replay a file's batch is drawn
-    against the episodes that came before, so appending would change
-    draws already in the array -- refused rather than silently wrong.
-    Proved against a full rebuild in tests/test_prepare.py.
+    Exact in both modes, and the replay case is the one worth stating.
+    schedule() gives each file a consecutive range of global offsets, so
+    a file added at the end adds its own range and changes nothing
+    before it. Its REPLAY BATCH is drawn from one RNG stream consumed
+    file by file, and an appended file draws AFTER every earlier draw --
+    so carrying the generator state forward reproduces the same
+    schedule a full rebuild would produce. That is the claim, and
+    tests/test_prepare.py checks it element by element rather than
+    taking the argument's word for it.
     """
-    if base["replay"]:
-        raise ValueError("prepared runs cannot append under replay")
     start = len(base["tr"])
     positions = array("q", range(start, start + len(extra) - 1))
     main = array("q", base["main"])
     online = array("q", base["online"])
     main.extend(positions)
     online.extend(positions)
+    if base["replay"] and positions:
+        # The appended file's own replay batch, drawn from the RNG in
+        # exactly the state schedule() would have left it in. `earlier`
+        # in schedule() is every episode before this file -- which is
+        # precisely base["online"], so nothing extra is carried.
+        rnd = random.Random()
+        rnd.setstate(base["state"])
+        earlier = base["online"]
+        old = (rnd.sample(earlier, min(len(earlier), len(positions)))
+               if len(earlier) else [])
+        batch = list(positions) + list(old)
+        rnd.shuffle(batch)
+        main.extend(batch)
     tfs = array("q", base["tfs"])
     tfs.append(start + len(extra))
     return {"tr": base["tr"] + extra, "tfs": tfs, "main": main,
-            "online": online, "n": base["n"] + 1, "replay": False}
+            "online": online, "n": base["n"] + 1,
+            "replay": base["replay"], "state": None}
 
 
 def device_run(binary, enc, train, val, test, kind, opts, know=None,
@@ -348,8 +363,9 @@ def device_run(binary, enc, train, val, test, kind, opts, know=None,
              | (8 if gated else 0))
     t_pack = time.time()
     replay = kind == "cls" and opts.get("replay")
-    if prepared is not None and replay:
-        raise ValueError("prepared runs cannot be used under replay")
+    if prepared is not None and bool(prepared["replay"]) != bool(replay):
+        raise ValueError("prepared base was built for replay=%r, this "
+                         "run is replay=%r" % (prepared["replay"], replay))
     if prepared is not None:
         main, online = prepared["main"], prepared["online"]
         tr, tfs, nfiles = prepared["tr"], prepared["tfs"], prepared["n"]

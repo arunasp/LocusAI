@@ -175,10 +175,11 @@ def main(argv):
 
     # Built once, reused by every arm.
     _lb, kind, opts = [t for t in G.LEARNERS if t[0] == LEARNER][0]
-    if kind == "cls" and opts.get("replay"):
-        prep = None                      # replay cannot be appended to
-    else:
-        prep = G.prepare(parts["train"])
+    # Built once and appended per arm, replay included. This learner
+    # HAS replay on, so while with_extra refused it the base was never
+    # used and every arm paid the full schedule build -- 29 s of a 51 s
+    # arm, measured with LOCUS_PHASES=1.
+    prep = G.prepare(parts["train"], kind == "cls" and opts.get("replay"))
     base, _lam = run_arm(binary, enc, parts["train"], parts["val"],
                          test, None, prep)
     print("baseline  %.6f bits per byte" % base)
