@@ -30,6 +30,20 @@ services:
     build: .
     image: local-dev-tools
     command: ["python3", "/app/bash_mcp_server.py"]
+    # PID 1 here is the MCP server, an APPLICATION, and an application
+    # does not do what init does: reap orphans. A `make bg` job whose
+    # shell exits gets reparented to PID 1 and stays a zombie, because
+    # nothing calls wait() for it. That is the `[sh] <defunct>` and
+    # `[git] <defunct>` recurrence -- harmless in itself (a PID-table
+    # slot, no memory), but it invites the fix that is NOT safe: the
+    # usual one-liner kills the PARENT, and on 2026-09-23 00:28 that
+    # stopped this container, because the parent is PID 1.
+    #
+    # `init: true` puts a real init process at PID 1 which reaps them
+    # and re-execs the command as its child. Nothing else changes.
+    # Takes effect on the next RECREATE (tools/pipeline.sh server), not
+    # on a restart.
+    init: true
     environment:
       MCP_PORT: "1443"
       # Run the server as the invoking host user rather than root, so
