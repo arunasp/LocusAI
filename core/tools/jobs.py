@@ -187,16 +187,65 @@ def cmd_stop(root, procs, name):
     return 1
 
 
+WORKLOADS = ("learn_device", "babble_device", "perfmon.py", "know.py")
+
+
+def is_workload(cmd):
+    """True when the command RUNS one of our workloads.
+
+    Only the program position counts. A .py token counts ONLY when the
+    command word is an interpreter -- otherwise `grep -r know.py .` and
+    `vim tools/know.py` read as the workload they merely name, which the
+    first version of this did.
+    """
+    parts = cmd.split()
+    if not parts:
+        return False
+    base = os.path.basename(parts[0])
+    if base == "make":
+        # `make -C DIR bg JOB=...`: the target can sit anywhere after
+        # the options, so the whole argument list is the right place to
+        # look for it -- but only for make.
+        return "bg" in parts[1:]
+    if base in WORKLOADS:
+        return True
+    if base.startswith("python"):
+        for tok in parts[1:]:
+            if tok.startswith("-"):
+                continue
+            return os.path.basename(tok) in WORKLOADS
+    return False
+
+
+def ancestry(pid, procs):
+    """pid and every ancestor of it, so the monitor never reports the
+    process tree that invoked it."""
+    by_pid = {p["pid"]: p for p in procs}
+    out, seen = [], set()
+    while pid and pid not in seen:
+        seen.add(pid)
+        out.append(pid)
+        p = by_pid.get(pid)
+        pid = p["ppid"] if p else 0
+    return out
+
+
 def cmd_clean(root, procs):
     recs = records(root)
     known = set()
     for r in recs:
         known |= set(tree(r.get("pid", 0), procs))
     zombies = [p for p in procs if p["state"] == "Z"]
+    # MATCH WHAT IS RUNNING, NOT WHAT IS MENTIONED. This tested the
+    # whole command line for substrings, so `make commit-verified
+    # FILES=core/tools/perfmon.py` matched -- the pipeline that INVOKES
+    # this monitor reported itself as an unmanaged workload, and a real
+    # stray process would have been two lines of noise away from being
+    # missed. A name in an argument is a file; a name in the program
+    # position is a process.
+    known |= set(ancestry(os.getpid(), procs))
     ours = [p for p in procs
-            if ("make bg" in p["cmd"] or "learn_device" in p["cmd"]
-                or "perfmon.py" in p["cmd"] or "tools/know.py" in p["cmd"])
-            and p["pid"] not in known]
+            if is_workload(p["cmd"]) and p["pid"] not in known]
     print("recorded jobs: %d" % len(recs))
     print("zombies: %d" % len(zombies))
     for p in zombies:
