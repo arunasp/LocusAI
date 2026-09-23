@@ -4,15 +4,80 @@
   perfmon.py summary CSV [DEVICE_S]    print a utilisation summary
 
 Samples /proc/stat per CPU (busy = everything but idle and iowait) and
-/proc/meminfo. GPU counters are not readable under WSL2 (rocm-smi error
-8, amd-smi without a driver), so GPU use is given by the job itself as
-DEVICE_S, device seconds, and reported as a share of wall time.
+/proc/meminfo.
+
+GPU COUNTERS ARE RESOLVED AT INVOCATION, not assumed. Which management
+interface answers depends on what the environment EXPOSES, not on which
+library is installed: `/dev/kfd` plus `/dev/dri` is the native path and
+amd-smi talks to the amdgpu driver; `/dev/dxg` is WSL2, where that
+driver does not exist and the dxg build of libamd_smi is the one that
+answers. Both halves have to be present AND matched to the exposed
+device -- this file used to state flatly that GPU counters are
+unreadable under WSL2, which bakes one boot's answer into a tool that
+runs on both.
+
+When no interface answers, device use still gets reported: the job
+passes its own measured DEVICE_S, device seconds, and the summary gives
+it as a share of wall time. That number is better than a utilisation
+percentage anyway -- it says how much of the run was serial host work.
 """
 
 import csv
+import os
 import signal
+import subprocess
 import sys
 import time
+
+
+def gpu_sampler():
+    """A callable returning (busy_pct, mem_mib), or None if nothing here
+    can answer. Probed once, because the answer cannot change mid-run.
+
+    Returns None quietly: a job on a machine with no management
+    interface should still produce a perf file, and the summary falls
+    back to the device seconds the job measured itself.
+    """
+    exposed = [d for d in ("/dev/kfd", "/dev/dri", "/dev/dxg")
+               if os.path.exists(d)]
+    if not exposed:
+        return None
+    smi = None
+    for cand in ("amd-smi", "rocm-smi"):
+        for root in (os.environ.get("ROCM_PATH", "/opt/rocm"), ""):
+            path = os.path.join(root, "bin", cand) if root else cand
+            try:
+                r = subprocess.run([path, "version"], capture_output=True,
+                                   text=True, timeout=20)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if r.returncode == 0:
+                smi = path
+                break
+        if smi:
+            break
+    if not smi:
+        return None
+
+    def sample():
+        try:
+            r = subprocess.run([smi, "metric", "--usage", "--csv"],
+                               capture_output=True, text=True, timeout=20)
+            if r.returncode != 0:
+                return None
+            rows = list(csv.DictReader(r.stdout.splitlines()))
+            if not rows:
+                return None
+            row = rows[0]
+            busy = next((float(v) for k, v in row.items()
+                         if "gfx_activity" in k), None)
+            mem = next((float(v) for k, v in row.items()
+                        if "used_vram" in k), None)
+            return (busy, mem)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+
+    return sample if sample() else None
 
 
 def cpu_times():
@@ -42,11 +107,16 @@ def record(path, interval):
     stop = []
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.append(1))
+    gpu = gpu_sampler()
+    sys.stderr.write("perfmon: gpu counters %s\n"
+                     % ("available" if gpu else
+                        "unavailable here -- device seconds only"))
     prev, t_prev = cpu_times(), time.time()
     t0 = t_prev
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["t", "busy_cores", "ncpu", "mem_mib"])
+        w.writerow(["t", "busy_cores", "ncpu", "mem_mib",
+                    "gpu_busy", "gpu_mib"])
         while not stop:
             time.sleep(interval)
             cur, t = cpu_times(), time.time()
@@ -55,8 +125,11 @@ def record(path, interval):
                 pb, pt = prev.get(c, (b, tot))
                 if tot > pt:
                     busy += (b - pb) / (tot - pt)
+            g = gpu() if gpu else None
             w.writerow(["%.2f" % (t - t0), "%.3f" % busy, len(cur),
-                        "%.0f" % mem_used_mib()])
+                        "%.0f" % mem_used_mib(),
+                        "" if not g or g[0] is None else "%.1f" % g[0],
+                        "" if not g or g[1] is None else "%.0f" % g[1]])
             fh.flush()
             prev, t_prev = cur, t
     return 0
