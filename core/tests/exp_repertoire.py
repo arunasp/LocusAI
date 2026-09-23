@@ -99,6 +99,15 @@ def main(argv):
     covered, unstable_covered = cycle.survey_driven(every)
     matched = set(covered)
 
+    # Both arms above take the sample count from me: n cues, because I
+    # said so. survey_saturating takes it from the field instead -- it
+    # draws until the repertoire stops growing and REPORTS how many that
+    # took. That is the quantity the two arms above silently assumed.
+    draw = random.Random(seed + 2)
+    sat, unstable_sat, consumed, saturated = cycle.survey_saturating(
+        lambda: draw.randrange(n))
+    saturating = set(sat)
+
     print("field       n=%d, random kernel, seed %d" % (n, seed))
     print("enumerated  %d supports, %d unstable, %.2f s"
           % (len(enumerated), unstable, t_enum))
@@ -108,6 +117,9 @@ def main(argv):
              len(set(stream))))
     print("driven all  %d supports, %d unstable, over %d cues each once"
           % (len(matched), unstable_covered, len(every)))
+    print("saturating  %d supports, %d unstable, %d cues drawn, %s"
+          % (len(saturating), unstable_sat, consumed,
+             "saturated" if saturated else "HIT THE CAP, not saturated"))
     print("shared      %d" % len(enumerated & driven))
     print("only driven %d" % len(driven - enumerated))
     print("only enum   %d" % len(enumerated - driven))
@@ -115,6 +127,8 @@ def main(argv):
         print("driven/enumerated %.2f (repeating stream), %.2f (every cue "
               "once)" % (len(driven) / len(enumerated),
                          len(matched) / len(enumerated)))
+    print("sat vs enum %d only in saturating, %d only in enumerated"
+          % (len(saturating - enumerated), len(enumerated - saturating)))
     print("input share %.3f (drive arriving from outside at the end; "
           "a field running free decays toward zero)"
           % cycle.field.observed_input_share())

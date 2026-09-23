@@ -41,8 +41,5 @@ class NoveltyGate:
         self._known[key] = frozenset(features)
         return True, error * self.salience_gain
 
-    def forget(self, key):
-        self._known.pop(key, None)
-
     def __len__(self):
         return len(self._known)

@@ -288,11 +288,6 @@ class Cycle:
         return Step(active, settled, fast, tags, touched, outcome)
 
     # ------------------------------------------------------------ reads --
-    def learned_kernel(self):
-        """The learned weights as a kernel. Derived on every call; the
-        weights remain the source of truth."""
-        return self.plasticity.as_kernel(self.n)
-
     def reset_state(self, level=0.02):
         """Clear activation without touching what was learned. Used
         between task episodes: the point of learning is that it survives

@@ -28,6 +28,7 @@ findings is a decision, not a fix.
 """
 
 import ast
+import collections
 import os
 import re
 import sys
@@ -115,6 +116,43 @@ def constants(files):
     return rows
 
 
+def references(path, src):
+    """Names this file actually USES, as code.
+
+    Counting raw substrings made a name MENTIONED IN A COMMENT read as a
+    caller, which silently cleared an inert definition -- a false "used"
+    is worse than a false "unused", because nobody goes looking for it.
+    For Python the names come from the parse tree; for C and C++, from
+    the source with comments and string literals stripped.
+    """
+    names = collections.Counter()
+    if path.endswith(".py"):
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            return names
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Name):
+                names[n.id] += 1
+            elif isinstance(n, ast.Attribute):
+                names[n.attr] += 1
+            elif isinstance(n, (ast.FunctionDef, ast.ClassDef)):
+                for d in n.decorator_list:
+                    # A decorated definition is REGISTERED by that
+                    # decorator -- an MCP tool, a handler -- so the name
+                    # having no textual caller says nothing.
+                    names["@" + n.name] += 1
+            elif isinstance(n, ast.keyword) and n.arg:
+                names[n.arg] += 1
+    else:
+        code = re.sub(r"/\*.*?\*/", " ", src, flags=re.S)
+        code = re.sub(r"//[^\n]*", " ", code)
+        code = re.sub(r'"(?:[^"\\]|\\.)*"', ' "" ', code)
+        for word in re.findall(r"[A-Za-z_]\w*", code):
+            names[word] += 1
+    return names
+
+
 def definitions(files):
     """(path, name, line, is_class) for things another file could call.
 
@@ -161,6 +199,7 @@ def report(files, want_c, want_i):
 
     if want_i:
         defs = definitions(files)
+        used = {p: references(p, src) for p, src in files.items()}
         print("INERT: %d public definitions" % len(defs))
         never, testonly, classes = [], [], []
         seen = set()
@@ -168,16 +207,16 @@ def report(files, want_c, want_i):
             if (p, name) in seen:
                 continue      # one row per definition, not per parse hit
             seen.add((p, name))
-            prod = sum(s.count(name) for q, s in files.items()
+            prod = sum(u[name] for q, u in used.items()
                        if q != p and "/tests/" not in q)
-            test = sum(s.count(name) for q, s in files.items()
-                       if "/tests/" in q)
+            test = sum(u[name] for q, u in used.items() if "/tests/" in q)
+            registered = used[p]["@" + name]
             # A helper used only inside its own module is not inert; it
             # just is not surface. Without this the tool called its own
             # internals dead.
-            own = files[p].count(name) - 1
+            own = used[p][name]
             where = os.path.relpath(p, REPO)
-            if prod == 0 and test == 0 and own <= 0:
+            if prod == 0 and test == 0 and own <= 0 and not registered:
                 never.append((where, name, line))
             elif prod == 0 and test > 0:
                 testonly.append((where, name, test))
