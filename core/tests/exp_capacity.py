@@ -45,21 +45,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import watchdog as wd                    # noqa: E402
 from locus.cycle import Cycle            # noqa: E402
-
-
-def random_kernel(n, seed, deg=6):
-    """Uniformly random targets. No block structure, so nothing
-    distinguishes one region from another."""
-    rnd = random.Random(seed)
-    rows = []
-    for i in range(n):
-        row = [0.0] * n
-        row[i] = 0.3 + 0.2 * rnd.random()
-        for _ in range(deg):
-            row[rnd.randrange(n)] += rnd.random()
-        s = sum(row)
-        rows.append([v / s for v in row])
-    return rows
+from fixtures import random_kernel            # noqa: E402
 
 
 def modular_kernel(n, seed, blocks=8, leak=0.05):

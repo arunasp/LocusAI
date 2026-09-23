@@ -35,27 +35,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "py"))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from locus.cycle import Cycle                  # noqa: E402
-
-
-def random_kernel(n, seed, deg=6):
-    """The kernel exp_capacity.py uses, so the repertoire compared here
-    is the one those measurements are about.
-
-    A uniform ring was tried first and gave ONE support to both
-    instruments: with nothing to distinguish regions the field has a
-    single global attractor, and a comparison of two ways to count one
-    thing says nothing.
-    """
-    rnd = random.Random(seed)
-    rows = []
-    for i in range(n):
-        row = [0.0] * n
-        row[i] = 0.3 + 0.2 * rnd.random()
-        for _ in range(deg):
-            row[rnd.randrange(n)] += rnd.random()
-        total = sum(row)
-        rows.append([v / total for v in row])
-    return rows
+from fixtures import random_kernel            # noqa: E402
 
 
 def main(argv):

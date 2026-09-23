@@ -41,25 +41,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import watchdog as wd  # noqa: E402
 from locus.field import Field  # noqa: E402
 from locus.plasticity import Plasticity  # noqa: E402
-
-
-def ring_kernel(n, seed, reach=3):
-    """Row-stochastic kernel with local connectivity and a positive
-    diagonal. Local rather than random because a random sparse kernel is
-    frequently reducible, which makes failures say nothing about the
-    dynamics under test."""
-    rnd = random.Random(seed)
-    rows = []
-    for i in range(n):
-        row = [0.0] * n
-        row[i] = 0.4 + 0.3 * rnd.random()
-        for d in range(1, reach + 1):
-            w = (0.6 ** d) * (0.4 + rnd.random())
-            row[(i + d) % n] += w
-            row[(i - d) % n] += w
-        s = sum(row)
-        rows.append([v / s for v in row])
-    return rows
+from fixtures import ring_kernel            # noqa: E402
 
 
 class Simultaneity(unittest.TestCase):

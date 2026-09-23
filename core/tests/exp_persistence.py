@@ -44,6 +44,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import watchdog as wd                          # noqa: E402
 from locus.field import Field                  # noqa: E402
 from locus.plasticity import Plasticity        # noqa: E402
+from fixtures import participation_ratio            # noqa: E402
 
 FLOAT_BYTES = 4          # what a device-side fp32 field would cost
 PAIR_BYTES = 12          # two int32 keys plus one fp32 value
@@ -105,19 +106,6 @@ def spearman(xs, ys):
     dx = sum((a - mx) ** 2 for a in rx) ** 0.5
     dy = sum((b - my) ** 2 for b in ry) ** 0.5
     return (num / (dx * dy)) if dx > 0 and dy > 0 else 0.0
-
-
-def participation_ratio(a):
-    """Effective number of active units: (sum a)^2 / sum(a^2).
-
-    THRESHOLD-FREE, which matters because the earlier residency figures
-    were all threshold-dependent and the sparse pair store turned out to
-    saturate into a dense one below 0.02. A measure that needs a cutoff
-    cannot say whether the field is sparse; this one can.
-    """
-    s1 = sum(a)
-    s2 = sum(v * v for v in a)
-    return (s1 * s1 / s2) if s2 > 0 else 0.0
 
 
 def main():

@@ -41,8 +41,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "py"))
 from locus import trace_chain as tc  # noqa: E402
 
 
-def random_kernel(n, seed, density=1.0):
+def irreducible_kernel(n, seed, density=1.0):
     """A random row-stochastic kernel with a positive diagonal.
+
+    NOT the `random_kernel` in fixtures.py: that one takes a degree and
+    is what the field experiments measure on, this one takes a density
+    and guarantees irreducibility for the trace-chain properties. They
+    shared a name and produced different kernels, which is a collision
+    waiting to send someone to the wrong construction.
 
     The diagonal floor keeps the chain irreducible and aperiodic, so the
     stationary distribution exists and power iteration converges. Without
@@ -66,7 +72,7 @@ class TraceChainProperties(unittest.TestCase):
 
     def test_row_stochastic(self):
         for n, seed in ((8, 1), (12, 2), (20, 3)):
-            p = random_kernel(n, seed)
+            p = irreducible_kernel(n, seed)
             keep = list(range(0, n, 2))
             s = tc.trace_chain(p, keep)
             self.assertEqual(len(s), len(keep))
@@ -77,7 +83,7 @@ class TraceChainProperties(unittest.TestCase):
                 )
 
     def test_identity_on_full_set(self):
-        p = random_kernel(10, 4)
+        p = irreducible_kernel(10, 4)
         s = tc.trace_chain(p, list(range(10)))
         for i in range(10):
             for j in range(10):
@@ -86,14 +92,14 @@ class TraceChainProperties(unittest.TestCase):
     def test_no_aliasing_of_input(self):
         # The full-set path returns early; make sure it copies, or a
         # caller mutating the result would silently corrupt the kernel.
-        p = random_kernel(6, 5)
+        p = irreducible_kernel(6, 5)
         s = tc.trace_chain(p, list(range(6)))
         s[0][0] = 99.0
         self.assertNotEqual(p[0][0], 99.0)
 
     def test_transitivity_of_tracing(self):
         # The hierarchy property. Trace 24 -> 12 -> 6 against 24 -> 6.
-        p = random_kernel(24, 6)
+        p = irreducible_kernel(24, 6)
         mid = list(range(0, 24, 2))
         fine_to_mid = tc.trace_chain(p, mid)
         small_global = list(range(0, 24, 4))
@@ -110,7 +116,7 @@ class TraceChainProperties(unittest.TestCase):
                 )
 
     def test_stationary_consistency(self):
-        p = random_kernel(16, 7)
+        p = irreducible_kernel(16, 7)
         keep = list(range(0, 16, 2))
         pi = tc.stationary(p)
         want = [pi[i] for i in keep]
@@ -126,7 +132,7 @@ class TraceChainProperties(unittest.TestCase):
     def test_lumping_is_not_tracing(self):
         # NEGATIVE CONTROL. If these agreed, the linear solve would be
         # pointless and a plain reduction would do. Assert they DIFFER.
-        p = random_kernel(12, 8)
+        p = irreducible_kernel(12, 8)
         blocks = [[i, i + 1] for i in range(0, 12, 2)]
         keep = [b[0] for b in blocks]
         traced = tc.trace_chain(p, keep)
@@ -161,7 +167,7 @@ class TruncationProperties(unittest.TestCase):
     def test_truncation_converges_to_exact(self):
         # The cheap per-tick form must approach the exact trace as depth
         # rises. If it did not, depth would be a meaningless dial.
-        p = random_kernel(20, 11)
+        p = irreducible_kernel(20, 11)
         keep = list(range(0, 20, 2))
         exact = tc.trace_chain(p, keep)
         prev = first = None
@@ -197,7 +203,7 @@ class TruncationProperties(unittest.TestCase):
     def test_no_recursion_control_is_worse(self):
         # Ignoring excursions entirely must be clearly worse than one
         # step of recursion, or the recursion earns nothing.
-        p = random_kernel(20, 12)
+        p = irreducible_kernel(20, 12)
         keep = list(range(0, 20, 2))
         exact = tc.trace_chain(p, keep)
 
@@ -215,7 +221,7 @@ class TruncationProperties(unittest.TestCase):
         )
 
     def test_truncation_rows_are_stochastic(self):
-        p = random_kernel(14, 13)
+        p = irreducible_kernel(14, 13)
         keep = list(range(0, 14, 2))
         for depth in (-1, 0, 2):
             k = tc.truncated_trace(p, keep, depth)

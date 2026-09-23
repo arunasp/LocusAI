@@ -42,35 +42,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import watchdog as wd                    # noqa: E402
 from locus.cycle import Cycle            # noqa: E402
-
-
-def ring_kernel(n, seed, reach=3):
-    """Local connectivity with a positive diagonal. Local rather than
-    random because a random sparse kernel is frequently reducible, and
-    then a failure says nothing about the parameter under test."""
-    rnd = random.Random(seed)
-    rows = []
-    for i in range(n):
-        row = [0.0] * n
-        row[i] = 0.4 + 0.3 * rnd.random()
-        for d in range(1, reach + 1):
-            w = (0.6 ** d) * (0.4 + rnd.random())
-            row[(i + d) % n] += w
-            row[(i - d) % n] += w
-        s = sum(row)
-        rows.append([v / s for v in row])
-    return rows
-
-
-def participation_ratio(a):
-    """Effective number of active units: (sum a)^2 / sum(a^2).
-
-    Threshold-free, which matters: an earlier reading of 41% active was
-    an artefact of a chosen cutoff, and this measure needs none.
-    """
-    s1 = sum(a)
-    s2 = sum(v * v for v in a)
-    return (s1 * s1 / s2) if s2 > 0 else 0.0
+from fixtures import participation_ratio, ring_kernel            # noqa: E402
 
 
 def evaluate(n, kernel, beta, episodes=10, stride=4, max_fast=120):
