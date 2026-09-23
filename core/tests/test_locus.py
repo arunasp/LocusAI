@@ -93,6 +93,44 @@ class GraphTest(unittest.TestCase):
         self.assertEqual(self.graph.neighbours("a")["b"], 1.0)
 
 
+class NoveltyForgettingTest(unittest.TestCase):
+    """A gate in front of a finite memory must forget what the memory
+    forgot, or an event can never become novel again.
+
+    This replaces NoveltyGate.forget(), which was deleted as inert: the
+    capability was real but nothing ever called it, and an uncalled
+    deletion path invites someone to trust it. Pruning now rides the
+    novelty comparison itself, so it cannot fall out of use.
+    """
+
+    def test_an_evicted_trace_stops_counting_as_known(self):
+        with Store(capacity=2) as store:
+            gate = NoveltyGate(threshold=0.35, store=store)
+            admit, _s = gate.admit(1, {"smoke", "heat"})
+            self.assertTrue(admit)
+            store.put(1, b"fire drill")
+            self.assertEqual(len(gate), 1)
+
+            # The same event again is familiar while its trace lives.
+            self.assertFalse(gate.admit(1, {"smoke", "heat"})[0])
+
+            # Fill past capacity so the first trace is evicted.
+            for key in (2, 3, 4):
+                store.put(key, b"later")
+            self.assertIsNone(store.tier(1))
+
+            # Now it is novel again, and the dead key is gone.
+            admit, salience = gate.admit(1, {"smoke", "heat"})
+            self.assertTrue(admit)
+            self.assertGreater(salience, 0.0)
+
+    def test_without_a_store_the_gate_keeps_everything(self):
+        gate = NoveltyGate(threshold=0.35)
+        gate.admit(1, {"smoke", "heat"})
+        self.assertFalse(gate.admit(1, {"smoke", "heat"})[0])
+        self.assertEqual(len(gate), 1)
+
+
 class NoveltyTest(unittest.TestCase):
     def setUp(self):
         self.gate = NoveltyGate(threshold=0.35)
