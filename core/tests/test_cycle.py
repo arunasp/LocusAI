@@ -183,6 +183,59 @@ class OrientIsDerived(unittest.TestCase):
         )
 
 
+class LearningReachesTheDynamics(unittest.TestCase):
+    """The one-kernel property, which was a real defect before it was one.
+
+    The field used to run on the constructor kernel while `level_up`
+    traced a different one, so learning reached the BIAS and never the
+    dynamics. `operating_kernel` (anatomy + learning) and the `refresh`
+    inside `task_step` are the fix -- and nothing tested either, so
+    reverting the refresh would have left every test green.
+    """
+
+    def test_learning_changes_the_kernel_the_field_runs_on(self):
+        n = 16
+        c = Cycle(n, ring_kernel(n, 61))
+        before = [row[:] for row in c.field.kernel]
+        c.task_step(evidence=[4], outcome=1.0)
+        self.assertGreater(c.plasticity.live_weights(), 0,
+                           "nothing was learned, so the test proves "
+                           "nothing about what learning reaches")
+        self.assertNotEqual(before, c.field.kernel,
+                            "learning did not reach the dynamics -- the "
+                            "field is running on a stale kernel")
+
+    def test_refresh_is_what_carries_it(self):
+        # Naming the mechanism, not just the outcome: learning alone
+        # moves weights and leaves the field's kernel where it was.
+        n = 16
+        c = Cycle(n, ring_kernel(n, 62))
+        c.settle(evidence=[4])
+        stale = [row[:] for row in c.field.kernel]
+        c.learn(1.0)
+        self.assertEqual(stale, c.field.kernel,
+                         "the field kernel moved without a refresh")
+        c.refresh()
+        self.assertNotEqual(stale, c.field.kernel,
+                            "refresh did not hand the learned kernel to "
+                            "the field")
+
+    def test_a_bad_outcome_suppresses_a_structural_link(self):
+        # Anatomy PLUS learning, with a negative weight subtracting --
+        # and clamped at zero, since a link can be removed but not
+        # inverted into negative probability.
+        n = 16
+        c = Cycle(n, ring_kernel(n, 63))
+        for _ in range(3):
+            c.task_step(evidence=[4], outcome=-1.0)
+        self.assertLess(sum(c.plasticity.weights.values()), 0.0)
+        for i, row in enumerate(c.operating_kernel()):
+            self.assertTrue(all(v >= 0.0 for v in row),
+                            "row %d went negative" % i)
+            self.assertAlmostEqual(sum(row), 1.0, places=9,
+                                   msg="row %d is not stochastic" % i)
+
+
 class UsableForATask(unittest.TestCase):
 
     def test_learning_survives_an_episode_boundary(self):
