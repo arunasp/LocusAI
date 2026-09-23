@@ -1,136 +1,221 @@
-"""Two audits the standing rules ask for, run against the library.
+"""Two audits the standing rules ask for, across the whole repository.
 
-  audit.py [--constants] [--inert]      (default: both)
+  audit.py [--constants] [--inert] [--path P] [--all]
+                                        (default: both, whole repo)
 
 CONSTANTS. doc/core/ROADMAP.md's standing constraints say no static
 value where biology has dynamics, and that any value which cannot yet be
-derived is recorded as initial state with its open question. This lists
-every module-level numeric constant and numeric default in
-core/py/locus, and marks the ones with NO nearby note saying so. A
-number without that note is a design decision nobody declared.
+derived is recorded as initial state with its open question. This finds
+numeric constants and numeric defaults in Python, and `#define` and
+`static const` values in C and C++, and marks the ones with NO nearby
+note saying so. A number without that note is a design decision nobody
+declared.
 
 INERT CODE. A mechanism that exists but nothing constructs is DECLARED,
 not ACTIVE -- the distinction this project keeps rediscovering. This
-lists public definitions no non-test file references, and separately the
-classes no running path builds, which is the stronger form: tests that
-construct a thing prove it works, not that anything uses it.
+lists public definitions no non-test file references (Python functions
+and classes, C functions declared in a header), and separately the
+classes built only by tests, which is the stronger form: a test that
+constructs a thing proves it works, not that anything uses it.
 
-Reports only. Nothing here fails a build, because the right response to
-most findings is a decision, not a fix.
+Scanned: every .py, .c, .h, .cpp under the repository except build
+output, virtualenvs, caches and VENDORED headers -- a third party's
+constants are not this project's design decisions. `--all` includes them
+anyway; `--path P` restricts everything to one subtree.
+
+Reports only, and never fails a build: the right response to most
+findings is a decision, not a fix.
 """
 
 import ast
 import os
+import re
 import sys
 
-# Resolved from this file, not from the working directory: run from
-# core/ the relative form scanned nothing and every definition looked
-# unused, which is a scan that lies rather than one that finds nothing.
 CORE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LIB = os.path.join(CORE, "py", "locus")
-ROOTS = tuple(os.path.join(CORE, d) for d in ("py", "tools", "tests"))
+REPO = os.path.dirname(CORE)
+CODE = (".py", ".c", ".h", ".cpp")
+SKIP = ("/build/", "/.venv/", "/__pycache__/", "/.git/", "/node_modules/",
+        "/.rocm-include/", "/mock/", "/hf/", "/data/")
 FLAGS = ("initial", "open question", "not tuned", "placeholder", "until",
-         "for now", "arbitrary", "default", "measured", "derived")
+         "for now", "arbitrary", "default", "measured", "derived",
+         "chosen so", "bound", "limit")
+DEFINE = re.compile(r"^\s*#define\s+([A-Za-z_]\w*)\s+"
+                    r"\(?(-?\d+\.?\d*(?:e-?\d+)?)\)?\s*(?:/\*|//|$)")
+STATIC = re.compile(r"^\s*static\s+const\s+\w[\w ]*\s+([A-Za-z_]\w*)\s*=\s*"
+                    r"\(?(-?\d+\.?\d*(?:e-?\d+)?)")
+CFUNC = re.compile(r"^\w[\w \*]*\s\*?([a-z_][a-z0-9_]*)\s*\([^;]*\)\s*$")
 
 
-def sources(roots):
+def wanted(path, include_vendor=False):
+    p = "/" + path.replace(os.sep, "/")
+    if not path.endswith(CODE):
+        return False
+    return include_vendor or not any(s in p for s in SKIP)
+
+
+def sources(root, include_vendor=False):
     out = {}
-    for root in roots:
-        for d, _, fs in os.walk(root):
-            if "__pycache__" in d:
-                continue
-            for f in fs:
-                if f.endswith(".py"):
-                    p = os.path.join(d, f)
-                    out[p] = open(p, errors="replace").read()
+    for d, _, fs in os.walk(root):
+        for f in fs:
+            p = os.path.join(d, f)
+            if wanted(p, include_vendor):
+                out[p] = open(p, errors="replace").read()
     return out
 
 
-def near(lines, lineno, span=4):
+def near(lines, lineno, span=5):
     lo = max(0, lineno - span - 1)
     return " ".join(lines[lo:lineno + 1]).lower()
 
 
-def constants(lib):
-    rows = []
-    for p in sorted(lib):
-        src = lib[p]
-        lines = src.splitlines()
-        for n in ast.walk(ast.parse(src)):
-            if (isinstance(n, ast.Assign) and n.col_offset == 0
-                    and isinstance(n.targets[0], ast.Name)
-                    and isinstance(n.value, ast.Constant)
-                    and isinstance(n.value.value, (int, float))
-                    and not isinstance(n.value.value, bool)):
-                rows.append((p, n.lineno, n.targets[0].id, n.value.value,
-                             any(f in near(lines, n.lineno) for f in FLAGS)))
-            if isinstance(n, ast.FunctionDef) and n.args.defaults:
-                args = n.args.args[-len(n.args.defaults):]
-                for a, dv in zip(args, n.args.defaults):
-                    if (isinstance(dv, ast.Constant)
-                            and isinstance(dv.value, (int, float))
-                            and not isinstance(dv.value, bool)):
-                        rows.append(
-                            (p, n.lineno, "%s(%s)" % (n.name, a.arg),
-                             dv.value,
-                             any(f in near(lines, n.lineno, 8)
-                                 for f in FLAGS)))
+def py_constants(path, src):
+    rows, lines = [], src.splitlines()
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return rows
+    for n in ast.walk(tree):
+        if (isinstance(n, ast.Assign) and n.col_offset == 0
+                and isinstance(n.targets[0], ast.Name)
+                and isinstance(n.value, ast.Constant)
+                and isinstance(n.value.value, (int, float))
+                and not isinstance(n.value.value, bool)):
+            rows.append((path, n.lineno, n.targets[0].id, n.value.value,
+                         any(f in near(lines, n.lineno) for f in FLAGS)))
+        if isinstance(n, ast.FunctionDef) and n.args.defaults:
+            args = n.args.args[-len(n.args.defaults):]
+            for a, dv in zip(args, n.args.defaults):
+                if (isinstance(dv, ast.Constant)
+                        and isinstance(dv.value, (int, float))
+                        and not isinstance(dv.value, bool)):
+                    rows.append((path, n.lineno,
+                                 "%s(%s)" % (n.name, a.arg), dv.value,
+                                 any(f in near(lines, n.lineno, 10)
+                                     for f in FLAGS)))
     return rows
 
 
-def inert(lib, everything):
-    defs = []
-    for p, src in lib.items():
-        for n in ast.walk(ast.parse(src)):
-            if (isinstance(n, (ast.FunctionDef, ast.ClassDef))
-                    and not n.name.startswith("_")):
-                defs.append((p, n.name, n.lineno,
-                             isinstance(n, ast.ClassDef)))
-    rows = []
-    for p, name, line, is_class in defs:
-        prod = sum(s.count(name) for q, s in everything.items()
-                   if q != p and "/tests/" not in q)
-        test = sum(s.count(name) for q, s in everything.items()
-                   if "/tests/" in q)
-        rows.append((os.path.basename(p), name, line, is_class, prod, test))
+def c_constants(path, src):
+    rows, lines = [], src.splitlines()
+    for i, line in enumerate(lines, start=1):
+        for pat in (DEFINE, STATIC):
+            m = pat.match(line)
+            if m:
+                rows.append((path, i, m.group(1), m.group(2),
+                             any(f in near(lines, i) for f in FLAGS)))
     return rows
 
 
-def main(argv):
-    want_c = "--constants" in argv or not argv
-    want_i = "--inert" in argv or not argv
-    lib = sources([LIB])
-    everything = sources(ROOTS)
+def constants(files):
+    rows = []
+    for p, src in sorted(files.items()):
+        rows += (py_constants(p, src) if p.endswith(".py")
+                 else c_constants(p, src))
+    return rows
 
+
+def definitions(files):
+    """(path, name, line, is_class) for things another file could call.
+
+    Only from the library and the tools. A test file's own functions are
+    not surface anyone is meant to call, and counting them made 458 of
+    804 definitions look "referenced only by tests" -- true, and
+    meaningless. Tests still count as REFERENCES, which is the whole
+    point of separating declared from active.
+    """
+    out = []
+    for p, src in files.items():
+        if "/tests/" in p.replace(os.sep, "/"):
+            continue
+        if p.endswith(".py"):
+            try:
+                tree = ast.parse(src)
+            except SyntaxError:
+                continue
+            for n in ast.walk(tree):
+                if (isinstance(n, (ast.FunctionDef, ast.ClassDef))
+                        and not n.name.startswith("_")):
+                    out.append((p, n.name, n.lineno,
+                                isinstance(n, ast.ClassDef)))
+        elif p.endswith(".c"):  # headers declare, .c defines
+            for i, line in enumerate(src.splitlines(), start=1):
+                m = CFUNC.match(line)
+                if m and not line.startswith("static"):
+                    out.append((p, m.group(1), i, False))
+    return out
+
+
+def report(files, want_c, want_i):
     if want_c:
-        rows = constants(lib)
+        rows = constants(files)
         bare = [r for r in rows if not r[4]]
-        print("CONSTANTS: %d numeric values, %d with no note calling them "
-              "initial state or open" % (len(rows), len(bare)))
-        for p, line, name, value, _flag in sorted(bare, key=lambda r: r[0]):
-            print("  %-16s %-30s %-12s %s:%d"
-                  % (os.path.basename(p), name, value,
-                     os.path.basename(p), line))
+        print("CONSTANTS: %d numeric values in %d files, %d with no note "
+              "calling them initial state or open"
+              % (len(rows), len(files), len(bare)))
+        for p, line, name, value, _f in bare:
+            print("  %-46s %-30s %s"
+                  % (os.path.relpath(p, REPO) + ":" + str(line), name,
+                     value))
         print()
 
     if want_i:
-        rows = inert(lib, everything)
-        never = [r for r in rows if r[4] == 0 and r[5] == 0]
-        testonly = [r for r in rows if r[4] == 0 and r[5] > 0]
-        classes = [r for r in rows if r[3] and r[4] <= 1]
-        print("INERT: %d public definitions, %d referenced nowhere, %d only "
-              "by tests" % (len(rows), len(never), len(testonly)))
-        for f, name, line, _c, _p, _t in sorted(never):
-            print("  never used      %-16s %-26s %s:%d" % (f, name, f, line))
-        for f, name, line, _c, _p, t in sorted(testonly):
-            print("  tests only      %-16s %-26s %d references" % (f, name, t))
+        defs = definitions(files)
+        print("INERT: %d public definitions" % len(defs))
+        never, testonly, classes = [], [], []
+        seen = set()
+        for p, name, line, is_class in defs:
+            if (p, name) in seen:
+                continue      # one row per definition, not per parse hit
+            seen.add((p, name))
+            prod = sum(s.count(name) for q, s in files.items()
+                       if q != p and "/tests/" not in q)
+            test = sum(s.count(name) for q, s in files.items()
+                       if "/tests/" in q)
+            # A helper used only inside its own module is not inert; it
+            # just is not surface. Without this the tool called its own
+            # internals dead.
+            own = files[p].count(name) - 1
+            where = os.path.relpath(p, REPO)
+            if prod == 0 and test == 0 and own <= 0:
+                never.append((where, name, line))
+            elif prod == 0 and test > 0:
+                testonly.append((where, name, test))
+            # prod == 0 with no test reference and own > 0 is an
+            # internal helper: not surface, not inert, not reported.
+            elif is_class and prod <= 1 and test:
+                classes.append((where, name, test))
+        # Deduplicate what is REPORTED, so the count and the rows agree
+        # whatever the parse produced; two rows for one definition would
+        # make the reader doubt the rest of the report.
+        never = sorted(set(never))
+        testonly = sorted(set(testonly))
+        classes = sorted(set(classes))
+        print("  never referenced: %d, referenced only by tests: %d"
+              % (len(never), len(testonly)))
+        for where, name, line in never:
+            print("  never used   %-40s %s:%d" % (name, where, line))
+        for where, name, test in testonly:
+            print("  tests only   %-40s %s (%d)" % (name, where, test))
         print()
-        print("DECLARED, NOT ACTIVE: classes no running path constructs")
+        print("DECLARED, NOT ACTIVE: classes built only by tests")
         print("  (a hint, not a verdict: a class can appear here because "
               "it is RETURNED or RAISED rather than named)")
-        for f, name, line, _c, p, t in sorted(classes):
-            if t:
-                print("  %-16s %-26s built only in tests" % (f, name))
+        for where, name, test in classes:
+            print("  %-40s %s" % (name, where))
+
+
+def main(argv):
+    want_c = "--constants" in argv or not set(argv) & {"--constants",
+                                                       "--inert"}
+    want_i = "--inert" in argv or not set(argv) & {"--constants", "--inert"}
+    root = REPO
+    if "--path" in argv:
+        root = os.path.join(REPO, argv[argv.index("--path") + 1])
+    files = sources(root, include_vendor="--all" in argv)
+    print("scanning %s (%d files)\n" % (os.path.relpath(root, REPO) or ".",
+                                        len(files)))
+    report(files, want_c, want_i)
     return 0
 
 
