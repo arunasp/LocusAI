@@ -383,6 +383,14 @@ ollama-code: ## Fetch the serving code and anatomy of the local Ollama models
 # Reading material: a bounded slice of a Hugging Face dataset into
 # build/data. DATASET=org/name, DATAARGS='--file PATH --max-mb N'; with no
 # --file it lists the repository and stops.
+# Stage 2 of the developmental path: the store produces rather than
+# predicts. Sampling is proportional to the store's own drive -- no
+# temperature, no top-k, since either would make the output a property
+# of a constant nobody measured rather than of what was learned.
+babble: ## Read a store's own expectations back out as bytes
+	$(if $(KNOW),,$(error babble: KNOW is required))
+	$(PYTHON3) -u tests/exp_babble.py $(KNOW) $(BABBLEARGS)
+
 hf-data: ## Fetch a bounded slice of a Hugging Face dataset into build/data
 	$(if $(DATASET),,$(error hf-data: DATASET is required))
 	$(PYTHON3) tools/hf_data.py $(DATASET) $(BUILD)/data $(DATAARGS)
