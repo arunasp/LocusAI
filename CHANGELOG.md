@@ -8,6 +8,32 @@ versions, since nothing is released yet.
 
 ### Added
 
+- `doc/core/ATTENTION.md` -- the five attention windows DEFINED FROM
+  BIOLOGY rather than from the transformer sense of the term, each with
+  what is built against it: sampling (one theta period), capacity
+  (items limited by interference), selection (biased competition),
+  integration (a consequence of hierarchical level) and refractory
+  (return inhibition). Nine references added to `REFERENCES.md`, each
+  with what it decides here rather than a summary.
+- `core/tests/exp_attention.py` -- readout reach, persistence, capacity
+  and return bias in one run. `core/tests/exp_babble.py` with `make
+  babble` -- the store reading its own expectations back out as bytes,
+  sampled from its own distribution with no temperature and no top-k.
+  `core/gpu/babble_device.cpp` with `core/tools/babble_gpu.py` -- the
+  same generator with seeds as the batch dimension, verified
+  byte-for-byte against the CPU path.
+- `core/tests/exp_selftrain.py` and `core/tests/exp_selftrain_gpu.py`
+  -- does learning from its own babble help, against a control reading
+  an equal quantity of real held-out text.
+  `core/tests/exp_hierarchy.py` -- separability and recoverability, the
+  two quantities `HIERARCHY.md` says decide the compression ratio.
+  `core/tests/exp_attended_read.py` -- English read through the
+  attention substrate, scored against the plain reader.
+- `make groups` and `GROUP=<name>` on `commit-verified` -- named file
+  sets, checked against the tree so a group that stopped matching it
+  fails. `locus_trace_heat` and `locus_attend` in the C API.
+  `make audit-ratchet`, in `all`, refusing a new undeclared constant.
+
 - `core/py/locus/assemble.py`, `core/values.json` and `make system` --
   INGEST, the last item on `CONSTITUTION.md`'s not-implemented list. A
   values file read ONCE at construction supplies costs, the categorical
@@ -411,6 +437,45 @@ versions, since nothing is released yet.
   testable on any machine; 23 assertions cover them plus the `.env` merge.
 
 ### Measured
+
+- ATTENTION, all four built windows. Readout reach: corrupting the byte
+  at distance d costs 7.97, 3.37, 1.84 and 0.94 bits at d=1..4 and
+  EXACTLY ZERO beyond, which is the encoder's reach at orders (2, 3, 4)
+  -- each further byte of context is worth about half the last.
+  Capacity: 1, 2 and 4 cues promote in full, then the set levels off
+  however many are cued, from a/(1 + beta*won) >= 1 rather than from
+  `active_k`. Pools: a declarative load of 1 to 32 leaves two
+  procedural and one instinct trace untouched. Interrupt: a merely
+  strong background trace costs the foreground nothing, a SALIENT one
+  costs it slots in proportion to tone.
+- SELF-TRAINING HURTS AT EVERY SCALE, and the control shows it is not
+  "any further reading hurts": ts-2002 with 1 MB of babble at 1.21% of
+  train, 8 seeds -- baseline 1.821737, self +0.002657 +/- 0.000009,
+  control -0.000059. ts-32 at 2.59%: +0.007105 +/- 0.000147 against
+  control -0.001024. The spread is 295x below the effect. Babble is
+  therefore a MEASUREMENT of what a training step produced; an
+  unfiltered stream fed back does not improve prediction.
+- BABBLE QUALITY rises late while prediction rises steadily: real-word
+  rate against the held-out split 50.0%, 50.9%, 55.7%, 58.0% across
+  ts-32 to ts-8000, flat until the last two stores. Self-bits stay
+  above the held-out figure at every size, so nothing collapses onto
+  its safest predictions.
+- FIFTH CURVE POINT: 344.9 MB train -> 1.806054 test bpb, 270,668
+  units, 1078.9 s device. The halving of gains per 4x STOPPED --
+  -0.066, -0.028, -0.017, -0.015 -- and device time went 4.98x for 4x
+  data where the previous three steps were 3.6, 3.9 and 4.2.
+- ATTENTION COSTS 1.11 BITS ON ENGLISH. The attended reader speaks with
+  2.71 of 6.99 offered units and scores +1.11 against the plain reader
+  at 4096 slots, improved from +3.22 once a slot became something won
+  per period rather than held. The direction across store size reversed
+  with it: more room now helps.
+- HIERARCHY, untrained: level-0 attractors overlap EACH OTHER at 0.83,
+  recovery beats chance by 0.05, separability is non-monotone across
+  ratios. The instrument works; the compression ratio is not answerable
+  on this field.
+- Device babble throughput 787,659 bytes/s on ts-32 and 182,000 on
+  ts-2002 against 3,112 for one CPU stream -- 253x and 58x from the
+  same kernel, because the store decides how much work a step carries.
 
 - Device and host↔device bandwidth on `gfx1100` under WSL2, with
   `core/gpu/exp_bandwidth.cpp` and `make bandwidth`: device copy 627.3
