@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libc6-dev \
         util-linux \
         procps \
+        time \
         libxml2 \
         libelf1 \
         libnuma1 \
@@ -33,6 +34,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # long job (make bg) has no other way to see what its own children are
 # doing. Added 2026-09-22 after a scoring run's cost was only visible
 # from outside.
+#
+# time: supplies /usr/bin/time, which reports a command's wall, user and
+# system time and its peak memory. procps does NOT provide it -- that
+# gap only showed up when a timing run failed on the rebuilt image.
 #
 # gcc/libc6-dev: so core/ can be compiled inside this container rather
 # than only outside it -- this is the only container with GPU access,

@@ -58,6 +58,12 @@ hipcc
 # image is rebuilt.
 ps
 
+# time: /usr/bin/time, a command's wall, user and system time and its
+# peak memory. Read-only, same rebuild caveat as ps -- and it comes from
+# the `time` package, NOT procps, which is why it was still missing
+# after the rebuild that added ps.
+time
+
 # make: added 2026-08-08 so the new root Makefile (lint/build/deploy/
 # verify/e2e/all, wrapping tools/pipeline.sh with standard DevOps
 # target names -- see Makefile itself) is callable through this proxy
