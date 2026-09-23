@@ -133,6 +133,18 @@ MUTATIONS = [
      "    if (1)\n        return 0;",
      ["c"]),
 
+    ("Field refuses a parameter that is not a finite, non-negative rate",
+     "py/locus/field.py",
+     "            if value < 0.0:",
+     "            if False:",
+     ["test_field"]),
+
+    ("Field refuses a non-finite injected amount",
+     "py/locus/field.py",
+     "        if amount != amount or amount in (INF, -INF):",
+     "        if False:",
+     ["test_field"]),
+
     ("the constitution's costs cannot be reached from outside",
      "py/locus/constitution.py",
      "        self._costs = types.MappingProxyType(costs)",

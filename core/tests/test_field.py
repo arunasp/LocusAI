@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "py"))
 sys.path.insert(0, os.path.dirname(__file__))
 
 import watchdog as wd  # noqa: E402
-from locus.field import Field  # noqa: E402
+from locus.field import INF, Field  # noqa: E402
 from locus.plasticity import Plasticity  # noqa: E402
 from fixtures import ring_kernel            # noqa: E402
 
@@ -652,6 +652,55 @@ class SpontaneousActivity(unittest.TestCase):
                 "noise modified the kernel at state %d -- it must "
                 "drive the field only" % i)
             self.assertAlmostEqual(sum(f.kernel[i]), 1.0, places=12)
+
+
+class NumbersAreCheckedNotAssumed(unittest.TestCase):
+    """Shape was validated and the parameters were not, so an
+    out-of-range number changed the MEANING of the dynamics rather than
+    failing. Found by generalising the zero-modulator case: a guarantee
+    resting on a numeric value is not a guarantee.
+    """
+
+    def kernel(self):
+        return ring_kernel(8, 3)
+
+    def test_a_negative_beta_is_refused(self):
+        # denom = 1 + beta * others reaches ZERO at beta < 0, and below
+        # it the drive flips sign and the rectifier floors the field.
+        with self.assertRaises(ValueError):
+            Field(8, self.kernel(), beta=-0.5)
+
+    def test_every_rate_must_be_finite(self):
+        for name in ("rho", "g", "beta", "leak", "dt", "a_max",
+                     "floor", "noise"):
+            for bad in (float("nan"), float("inf")):
+                with self.assertRaises(ValueError, msg="%s=%r"
+                                       % (name, bad)):
+                    Field(8, self.kernel(), **{name: bad})
+
+    def test_dt_and_a_max_must_be_positive(self):
+        with self.assertRaises(ValueError):
+            Field(8, self.kernel(), dt=0.0)
+        with self.assertRaises(ValueError):
+            Field(8, self.kernel(), a_max=0.0)
+
+    def test_a_non_finite_injection_is_refused(self):
+        # Evidence enters here; NaN would spread through the kernel on
+        # the next step and every later figure would be NaN with no
+        # failing step to point at.
+        f = Field(8, self.kernel())
+        with self.assertRaises(ValueError):
+            f.inject(0, float("nan"))
+        self.assertFalse(any(v != v for v in f.a))
+
+    def test_the_denominator_cannot_reach_zero(self):
+        # The property those guards protect, stated directly.
+        f = Field(8, self.kernel(), beta=2.0)
+        for i in range(8):
+            f.inject(i, 1.0)
+        for _ in range(20):
+            f.step()
+            self.assertTrue(all(v == v and abs(v) != INF for v in f.a))
 
 
 class Construction(unittest.TestCase):

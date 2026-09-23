@@ -65,6 +65,8 @@ which is a confusion that has already cost several iterations.
 
 import random
 
+INF = float("inf")
+
 
 class Field:
     """Continuous activation over ``n`` states, simultaneous update.
@@ -82,6 +84,28 @@ class Field:
     def __init__(self, n, kernel, rho=1.0, g=0.5, beta=0.1, leak=0.3,
                  dt=1.0, a_max=10.0, floor=1e-12, noise=0.0, seed=0,
                  areas=None):
+        # THE NUMBERS ARE CHECKED, not assumed. Shape was validated
+        # here and the parameters were not, so an out-of-range value
+        # changed the MEANING of the dynamics instead of failing: a
+        # negative beta drives `denom = 1.0 + beta * others` to zero
+        # (division by zero) or below it (drive flips sign, the
+        # rectifier floors every unit, and the field dies quietly --
+        # the same silent collapse subtractive inhibition produced).
+        # A non-finite value is worse: it propagates into every unit
+        # and no later operation recovers it.
+        for name, value in (("rho", rho), ("g", g), ("beta", beta),
+                            ("leak", leak), ("dt", dt),
+                            ("a_max", a_max), ("floor", floor),
+                            ("noise", noise)):
+            if value != value or value in (INF, -INF):
+                raise ValueError("%s must be finite, got %r"
+                                 % (name, value))
+            if value < 0.0:
+                raise ValueError("%s must be >= 0, got %r"
+                                 % (name, value))
+        if dt <= 0.0 or a_max <= 0.0:
+            raise ValueError("dt and a_max must be > 0, got %r and %r"
+                             % (dt, a_max))
         if len(kernel) != n:
             raise ValueError("kernel is %d x ? but n is %d"
                              % (len(kernel), n))
@@ -187,12 +211,18 @@ class Field:
                 self._area_of[i] = a_idx
 
     # ------------------------------------------------------------ input --
-    def inject(self, index, amount):
+    def inject(self, index, amount):  # noqa: E301
         """Add activation at one state. Injection is an EVENT, not a
         clamp: nothing re-applies it, so anything that persists
         afterwards persists on the field's own terms. Re-applying a
         constant every step is what turned an earlier measurement into a
         tautology."""
+        if amount != amount or amount in (INF, -INF):
+            # Evidence arrives here. A non-finite amount would spread
+            # through the kernel on the next step and every figure
+            # measured afterwards would be NaN with no failing step.
+            raise ValueError("injected amount must be finite, got %r"
+                             % (amount,))
         self.a[index] = min(self.a_max, self.a[index] + amount)
         self._pending_input += amount
 
