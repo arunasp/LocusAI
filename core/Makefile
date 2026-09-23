@@ -425,6 +425,12 @@ audit: ## Report unflagged constants and inert code in core/py/locus
 # file: costs, the categorical set, incompatibilities and classes, read
 # once at construction. VALUES=path picks another file; SYSARGS='--cue X'
 # dispatches a cue and shows the audit trace, refusals included.
+# Checks the DOCUMENTS against the repository: paths that do not exist,
+# make targets with no rule, symbols not in the source, and "not
+# implemented" claims whose subject now exists. Reports only.
+doc-audit: ## Check docs against the repo (paths, targets, symbols, stale claims)
+	$(PYTHON3) tools/docaudit.py $(DOCARGS)
+
 system: ## Assemble the system from values.json and report what it permits
 	$(PYTHON3) tools/system.py $(VALUES) $(SYSARGS)
 
