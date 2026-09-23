@@ -78,7 +78,10 @@ def attended_bits(know, data, capacity):
                 if u not in seen:
                     st.put(u, b"u", S.Pathway.DECLARATIVE, 1.0)
                     seen.add(u)
-                st.excite(u, 1.0)
+                # Solicited: the task asked for this unit, so it is
+                # exempt from the refractory depression. Reading is
+                # recurrence and depressing it penalises the signal.
+                st.attend(u, 1.0)
             st.tick()
             active = [u for u in live
                       if st.tier(u) == S.Tier.ACTIVE]

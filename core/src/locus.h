@@ -231,6 +231,18 @@ double locus_trace_activation(const LocusStore *s, LocusKey key);
  * then inhibition is a race between two decay rates, and only one of
  * them was observable. */
 double locus_trace_heat(const LocusStore *s, LocusKey key);
+
+/* Task-driven input: drive that the current task ASKED for, exempt from
+ * the refractory depression locus_excite applies. Inhibition of return
+ * is about EXOGENOUS orienting, and what matches current task settings
+ * is not filtered out (contingent capture, Folk et al. 1992). Reading
+ * is recurrence -- the same n-grams return constantly and that is the
+ * signal -- so depressing solicited drive penalises exactly what
+ * carries the statistics. Measured before this existed: an attended
+ * reader saw 1.2-1.6 of 6.99 offered units per position.
+ *
+ * locus_excite stays the unsolicited path and stays depressed. */
+int locus_attend(LocusStore *s, LocusKey key, double amount);
 int locus_trace_pinned(const LocusStore *s, LocusKey key);
 
 /* Deterministic k-winners-take-all over an activation vector. Exposed because

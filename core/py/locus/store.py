@@ -210,6 +210,9 @@ def _bind(path):
     lib.locus_trace_activation.restype = ctypes.c_double
     lib.locus_trace_heat.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
     lib.locus_trace_heat.restype = ctypes.c_double
+    lib.locus_attend.argtypes = [ctypes.c_void_p, ctypes.c_uint64,
+                                 ctypes.c_double]
+    lib.locus_attend.restype = ctypes.c_int
     lib.locus_kwta.argtypes = [
         ctypes.POINTER(ctypes.c_double), ctypes.c_int, ctypes.c_int,
         ctypes.POINTER(ctypes.c_uint8),
@@ -346,6 +349,13 @@ class Store:
     def gate(self):
         """Current modulatory tone: tonic baseline plus phasic component."""
         return self._lib.locus_gate(self._handle)
+
+    def attend(self, key, amount):
+        """Task-driven drive, exempt from the refractory depression.
+
+        `excite` is the unsolicited path and stays depressed.
+        """
+        return self._lib.locus_attend(self._handle, key, amount) == 0
 
     def excite(self, key, amount):
         return self._lib.locus_excite(self._handle, key, amount) == 0

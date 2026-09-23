@@ -537,6 +537,20 @@ int locus_excite(LocusStore *s, LocusKey key, double amount)
     return 0;
 }
 
+int locus_attend(LocusStore *s, LocusKey key, double amount)
+{
+    if (!s || !usable(amount))
+        return -1;
+    int i = find(s, key);
+    if (i < 0)
+        return -1;
+    /* No division by heat: the task asked for this. Heat still RISES --
+     * the response happened and the record of it is what the
+     * unsolicited path reads. */
+    s->slots[i].activation += amount;
+    return 0;
+}
+
 /* Bound the unpinned active set by competition. Pinned traces are required
  * residents and are exempt; they do not consume kWTA width. Selection is
  * noisy, so a marginally weaker contender sometimes holds its place. */
@@ -598,10 +612,22 @@ static double competing_total(const LocusStore *s, LocusPathway pathway)
      * an unbound term is inert whatever it looks like it does: within
      * one pathway it scales every trace and the boundary alike, so the
      * comparison it feeds is unchanged. */
+    /* COMPETITION IS AMONG WHAT IS IN PLAY, not among everything ever
+     * stored. This summed every resident trace, so a store that had
+     * READ MORE competed harder: measured on English, raising capacity
+     * from 256 to 4096 slots LOWERED the active set from 1.61 to 1.22
+     * units per position and cost 0.9 bits, because thousands of
+     * dormant n-gram units were still pressing on the few being read.
+     *
+     * Cortical competition is within a receptive field, among the
+     * representations active together (Desimone & Duncan 1995). A
+     * dormant trace is not a competitor; it is a memory. So only the
+     * ACTIVE set counts, and a candidate is weighed against what holds
+     * a slot rather than against the archive. */
     double own = 0.0;
     for (int i = 0; i < s->capacity; i++) {
         const Slot *t = &s->slots[i];
-        if (t->used && !t->pinned && t->tier != LOCUS_TIER_ARCHIVE
+        if (t->used && !t->pinned && t->tier == LOCUS_TIER_ACTIVE
             && t->path == pathway)
             own += t->activation;
     }
@@ -782,7 +808,7 @@ void locus_tick(LocusStore *s)
     int live = 0;
     for (int i = 0; i < s->capacity; i++) {
         const Slot *t = &s->slots[i];
-        if (t->used && !t->pinned && t->tier != LOCUS_TIER_ARCHIVE) {
+        if (t->used && !t->pinned && t->tier == LOCUS_TIER_ACTIVE) {
             double e = effective(s, t,
                                  competing_total(s, t->path));
             if (!live || e < lo)

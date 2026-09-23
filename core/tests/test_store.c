@@ -257,8 +257,13 @@ static void test_residency_is_relative_to_the_population(void)
     locus_put(s, 9, LOCUS_PATH_DECLARATIVE, "w", 1, 0.5);
     locus_excite(s, 9, 0.5);
     locus_tick(s);
-    ok(locus_trace_tier(s, 9) == LOCUS_TIER_ARCHIVE,
-       "a trace far below its population stayed resident");
+    /* NOT PROMOTED is the outcome, not ARCHIVED. Competition runs
+     * among the traces holding slots, so a trace far below its
+     * population never joins the active set; losing residency is a
+     * different event, for something that HAD a slot. Before
+     * competition was scoped to the active set this read ARCHIVE. */
+    ok(locus_trace_tier(s, 9) != LOCUS_TIER_ACTIVE,
+       "a trace far below its population took a slot");
     ok(locus_trace_tier(s, 1) != LOCUS_TIER_ARCHIVE,
        "a strong trace was archived");
     locus_store_destroy(s);
