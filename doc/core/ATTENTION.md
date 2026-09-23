@@ -40,8 +40,11 @@ next. `active_k` remains as a bound on the working set.
 
 Measured, cueing n traces at equal strength with active_k and slots
 set high enough that neither binds: 1, 2, 4 promote in full, then the
-set levels off at SEVEN however many are cued (8, 16, 32 all give 7).
-The limit is arithmetic, not chosen: a/(1 + beta*won) >= 1.
+set levels off however many are cued (8, 16, 32 all give the same).
+The limit is arithmetic, not chosen: a/(1 + beta*won) >= 1. It was
+seven before the refractory depression and is FIVE after, because the
+depression lowers every drive -- the number is a consequence of two
+mechanisms, which is why it is not written anywhere as a setting.
 
 What this replaced, measured before the change: 32 cued traces were
 each as strong as one, and the active count simply tracked the cue
@@ -143,10 +146,34 @@ Two limits, both consequences of occupancy rather than rules:
 - Attentional blink: a second target is missed ~200–500 ms after the
   first, while the first is being consolidated (Raymond et al. 1992).
 
-Partly built: `heat` decays slower than activation, so usage history
-outlives the moment, and the labile window in `store.c` holds a
-retrieved trace open before it restabilises. Neither implements return
-inhibition directly.
+Built, and biphasic. Biology is not a flat suppression: detection
+improves for ~100-300 ms after attending and worsens from ~500-3000 ms
+(Posner & Cohen 1984; Samuel & Kat 2003 on the time course). The
+depression sits on the INPUT -- superficial collicular visual neurons
+are depressed in cue-target-compatible conditions while intermediate
+neurons are not less sensitive to direct stimulation (Satel et al.
+2011; Dukewich 2009). The trace keeps what it has; what would
+re-orient to it is weakened.
+
+`locus_excite` therefore divides the incoming drive by heat, which is
+the record of prior response and is carried in the same units as
+drive. NO COEFFICIENT: a number in front of heat would be fitted, and
+the competition's beta -- tried first -- gave a 9% cut with no
+crossover inside twenty ticks, because it is the wrong quantity.
+
+Measured, a recently attended trace against a fresh one at equal
+drive:
+
+  away 1   revisited 2.1107   fresh 1.7000   both ACTIVE
+  away 2   revisited 1.9427   fresh 1.7000   both ACTIVE
+  away 4   revisited 1.6853   fresh 1.7000   revisited ARCHIVE
+  away 8   revisited 1.3885   fresh 1.7000   revisited ARCHIVE
+
+Facilitation for two ticks, then the revisited trace is worse off than
+a fresh one and loses its slot. The crossover needs no window and no
+timer: activation decays fast and gives the early advantage, heat
+decays slowly and gives the later cost, and both rates already
+existed.
 
 ## What this means for the input path
 

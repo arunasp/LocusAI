@@ -409,9 +409,13 @@ static void test_a_salient_background_event_breaks_through(void)
        "a strong background trace cost the foreground slots without "
        "any salience");
     /* A SALIENT one does, and more of it the louder the event. */
+    /* Salience levels are MEASUREMENT SETUP, not claims, and they moved
+     * when the refractory depression lowered every drive: at 2.0 the
+     * focal count no longer changes (5 -> 5), while 6.0 and 12.0 give
+     * 3 and 0. A stronger event is needed to show the same effect. */
     int quiet = focal_after(0.0, 2.0);
-    int some = focal_after(2.0, 2.0);
-    int loud = focal_after(6.0, 2.0);
+    int some = focal_after(6.0, 2.0);
+    int loud = focal_after(12.0, 2.0);
     ok(some < quiet, "a salient event did not break into the focal set");
     ok(loud < some, "breakthrough did not scale with salience");
 }

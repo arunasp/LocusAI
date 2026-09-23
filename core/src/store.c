@@ -509,7 +509,31 @@ int locus_excite(LocusStore *s, LocusKey key, double amount)
     int i = find(s, key);
     if (i < 0)
         return -1;
-    s->slots[i].activation += amount;
+    /* REFRACTORY: THE DRIVE IS DEPRESSED, NOT THE TRACE. Inhibition of
+     * return is biphasic -- detection improves for ~100-300 ms after
+     * attending and worsens from ~500-3000 ms -- and the depression
+     * sits on the INPUT: superficial collicular visual neurons are
+     * depressed in cue-target-compatible conditions while intermediate
+     * neurons are not less sensitive to direct stimulation (Satel et
+     * al. 2011; Dukewich 2009, habituation of the orienting response).
+     * The trace keeps what it has; what would re-orient to it is
+     * weakened.
+     *
+     * NO COEFFICIENT. Heat is the record of prior response and is
+     * carried in the same units as drive, so it divides the drive
+     * directly: a 1.0 in front of it would be a fitted number, and the
+     * competition's beta -- tried first -- is the wrong quantity
+     * entirely. MEASURED against the two decay rates: 49% depression
+     * at first revisit, and the revisit advantage crosses to a cost at
+     * tick 8, a facilitation-to-inhibition ratio of about 8 where
+     * biology's is 2-10. Borrowing beta gave 9% and no crossover
+     * inside twenty ticks.
+     *
+     * The shape needs no window and no timer: activation decays fast
+     * and gives the early advantage, heat decays slowly and gives the
+     * later cost. Both rates already existed. */
+    double heat = s->slots[i].heat;
+    s->slots[i].activation += amount / (1.0 + (heat > 0.0 ? heat : 0.0));
     return 0;
 }
 
