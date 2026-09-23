@@ -101,7 +101,7 @@ TESTBIN  = $(BUILD)/test_store
 # target shares its name with the gpu/ source directory, so without .PHONY
 # make sees the directory, considers the target satisfied, and silently does
 # nothing. Same collision the `build` target hit during the scaffold build.
-.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock hip-header-check rocm-headers rocm-image excursion bandwidth field-step field-sparse field-quiet gpu-cache hierarchy capacity operating-point stack singlepass precision stream stream-learn stream-learn-gpu bg jobs job-stop job-clean
+.PHONY: lint test build deploy verify e2e all clean gpu caps persist caps-mock gpu-syntax hip-header-check rocm-headers rocm-image excursion bandwidth field-step field-sparse field-quiet gpu-cache hierarchy capacity operating-point stack singlepass precision stream stream-learn stream-learn-gpu bg jobs job-stop job-clean
 
 # Sentinel file, deliberately NOT in .PHONY: a .PHONY listing would
 # force the install to re-run on every invocation regardless of
@@ -433,6 +433,26 @@ audit: ## Report unflagged constants and inert code in core/py/locus
 # property being broken -- one mechanism here already survived its own
 # removal with every test green. Reverts in a finally block and compares
 # the file byte for byte afterwards.
+# Syntax-checks every HIP translation unit with hipcc. The C substrate
+# is checked by `cc -fsyntax-only` in `all`, and the .cpp files had NO
+# equivalent: learn_device.cpp is the learner and it is compiled only
+# when someone runs `make learn-gpu` by hand, so an edit to it could sit
+# broken through any number of green pipelines. Kernel launch syntax
+# (`<<<...>>>`) cannot be parsed by a plain C++ compiler, so this needs
+# hipcc specifically and skips where there is none -- which is every
+# cicd_runner worker, by design. Run it in the GPU container.
+gpu-syntax: hip-header-check ## hipcc -fsyntax-only over core/gpu/*.cpp (skips without hipcc)
+	@if [ -x "$(HIPCC)" ] || command -v hipcc >/dev/null 2>&1; then \
+	  ok=0; bad=0; \
+	  for f in gpu/*.cpp; do \
+	    if $(HIPCC) $(HIPCXXFLAGS) $(HIPINC) -fsyntax-only -Isrc "$$f" 2>&1; then \
+	      ok=$$((ok+1)); \
+	    else bad=$$((bad+1)); echo "FAILED: $$f"; fi; \
+	  done; \
+	  echo "gpu-syntax: $$ok ok, $$bad failed"; \
+	  [ "$$bad" -eq 0 ]; \
+	else echo "gpu-syntax: no hipcc -- skipped"; fi
+
 mutate: ## Mutation-test the design claims (--only SUBSTRING, --list)
 	$(PYTHON3) tools/mutate.py $(MUTARGS)
 

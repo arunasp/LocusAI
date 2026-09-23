@@ -26,6 +26,7 @@
 //       (1 metaplastic, 2 top-order units only), int64 events[U],
 //       int64 rowptr[U+1], uint8 byte[nnz], double w[nnz]. A weight never
 //       moved stays exactly 0.0, so only non-zero weights are kept.
+#include <cerrno>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -457,8 +458,26 @@ static double *store(const Enc &e, const uint8_t *dd, const int64_t *dfs,
     // how many it has seen so the metaplastic 1/n keeps counting.
     size_t freeb = 0, totalb = 0;
     CHECK(hipMemGetInfo(&freeb, &totalb));
+    // THE RESERVE IS AN INPUT. atoll() turns anything it cannot parse
+    // into 0, so LOCUS_VRAM_RESERVE_MB="3g" or a stray space would
+    // SILENTLY LEAVE THE CARD NO HEADROOM -- which is exactly the
+    // condition that wedged the driver (CHANGELOG, 54427f3). Refused
+    // rather than defaulted: defaulting hides the typo and the operator
+    // goes on believing the reserve they set is in force.
     const char *rv = std::getenv("LOCUS_VRAM_RESERVE_MB");
-    size_t reserve = (size_t)(rv ? std::atoll(rv) : 3072) << 20;
+    long long reserve_mb = 3072;
+    if (rv && *rv) {
+        char *end = nullptr;
+        errno = 0;
+        reserve_mb = std::strtoll(rv, &end, 10);
+        if (errno != 0 || end == rv || *end != 0 || reserve_mb < 0) {
+            std::fprintf(stderr,
+                         "LOCUS_VRAM_RESERVE_MB=%s is not a non-negative "
+                         "number of megabytes\n", rv);
+            std::exit(2);
+        }
+    }
+    size_t reserve = (size_t)reserve_mb << 20;
     size_t weights = (size_t)e.U * B * sizeof(double) + (size_t)e.U * 8;
     size_t usable = freeb > reserve + weights ? freeb - reserve - weights
                                               : 0;
