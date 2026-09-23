@@ -282,6 +282,33 @@ static void test_residency_is_relative_to_the_population(void)
     ok(archived == 0,
        "a uniformly quiet store archived itself wholesale");
     locus_store_destroy(s);
+
+    /* EIGHT, not four. The four-trace case above passes even with a
+     * mean-only rule because dividing a sum of four identical doubles
+     * by four is exact; with eight it is not, so each trace can sit one
+     * ulp below its own mean and the whole store archives itself.
+     * Measured before the fix: eight traces at activation 1.8424, all
+     * ARCHIVE by the third tick. */
+    cfg.capacity = 32;
+    cfg.active_k = 8;
+    cfg.decay = 0.85;
+    s = locus_store_create(&cfg);
+    for (int k = 1; k <= 8; k++) {
+        locus_put(s, k, LOCUS_PATH_DECLARATIVE, "u", 1, 0.5);
+        locus_excite(s, k, 2.0);
+    }
+    for (int i = 0; i < 4; i++)
+        locus_tick(s);
+    int still = 0;
+    for (int k = 1; k <= 8; k++)
+        if (locus_trace_tier(s, k) != LOCUS_TIER_ARCHIVE)
+            still++;
+    ok(still == 8,
+       "eight identical traces archived themselves against their own "
+       "mean");
+    ok(locus_trace_activation(s, 1) > 0.5,
+       "the identical-trace case decayed too far to prove anything");
+    locus_store_destroy(s);
 }
 
 static void test_a_non_finite_input_is_refused_at_every_entry(void)

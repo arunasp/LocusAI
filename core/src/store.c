@@ -646,16 +646,32 @@ void locus_tick(LocusStore *s)
      * synaptic scaling normalises against a neuron's own inputs. An
      * empty population demotes nothing, since a mean of nothing is not a
      * boundary. */
-    double sum = 0.0;
+    double sum = 0.0, lo = 0.0, hi = 0.0;
     int live = 0;
     for (int i = 0; i < s->capacity; i++) {
         const Slot *t = &s->slots[i];
         if (t->used && !t->pinned && t->tier != LOCUS_TIER_ARCHIVE) {
+            if (!live || t->activation < lo)
+                lo = t->activation;
+            if (!live || t->activation > hi)
+                hi = t->activation;
             sum += t->activation;
             live++;
         }
     }
     double boundary = live ? sum / live : 0.0;
+    /* A UNIFORM POPULATION OUTCOMPETES NOBODY, and this is not a
+     * refinement -- without it the store archives ITSELF. sum/live is
+     * not exactly the common value when live does not divide the sum
+     * exactly, so eight identical traces can each sit one ulp below
+     * their own mean and every one of them demotes. Measured: eight
+     * traces at activation 1.8424 all archived, while four identical
+     * traces survived because dividing by four is exact.
+     *
+     * Comparing spread instead of trusting the mean needs no epsilon:
+     * if the strongest and the weakest are the same, no trace is weak
+     * relative to what it competes with. */
+    int spread = live && hi > lo;
 
     for (int i = 0; i < s->capacity; i++) {
         Slot *t = &s->slots[i];
@@ -663,7 +679,7 @@ void locus_tick(LocusStore *s)
             continue;
         if (t->activation >= 1.0 && t->tier == LOCUS_TIER_EPISODIC)
             t->tier = LOCUS_TIER_ACTIVE;
-        else if (live && t->activation < boundary &&
+        else if (spread && t->activation < boundary &&
                  t->tier != LOCUS_TIER_ARCHIVE && t->leases == 0)
             t->tier = LOCUS_TIER_ARCHIVE;
     }
