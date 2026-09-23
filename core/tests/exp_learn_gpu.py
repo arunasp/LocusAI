@@ -287,11 +287,26 @@ def schedule(train, replay, want_state=False):
     return (main, online, rnd.getstate()) if want_state else (main, online)
 
 
-def blob(files):
-    """Concatenated bytes and the start offset of each file."""
+def starts_of(files):
+    """Start offset of each file in their concatenation, and the total.
+
+    The concatenation itself is NOT built. `b"".join(files)` made a
+    second full copy of a corpus already resident as a list of files --
+    RAM holding the same bytes twice, for the sole purpose of being
+    written out in order. At 87 MB that is invisible; the target is
+    model data in gigabytes, where it is the difference between running
+    and swapping.
+    """
     starts = array("q", [0])
     for d in files:
         starts.append(starts[-1] + len(d))
+    return starts, starts[-1]
+
+
+def blob(files):
+    """Concatenated bytes and the start offsets. Kept for callers that
+    genuinely want the bytes; the write path uses starts_of()."""
+    starts, _total = starts_of(files)
     return b"".join(files), starts
 
 
@@ -307,10 +322,13 @@ def prepare(train, replay=False):  # noqa: C901
 
     Only valid WITHOUT replay -- see with_extra().
     """
-    tr, tfs = blob(train)
+    tfs, total = starts_of(train)
     main, online, state = schedule(train, replay, want_state=True)
-    return {"tr": tr, "tfs": tfs, "main": main, "online": online,
-            "n": len(train), "replay": replay, "state": state}
+    # `files` is the SAME list objects the caller already holds, not a
+    # copy: a prepared base adds the schedule, never a second corpus.
+    return {"files": list(train), "bytes": total, "tfs": tfs,
+            "main": main, "online": online, "n": len(train),
+            "replay": replay, "state": state}
 
 
 def with_extra(base, extra):
@@ -326,7 +344,7 @@ def with_extra(base, extra):
     tests/test_prepare.py checks it element by element rather than
     taking the argument's word for it.
     """
-    start = len(base["tr"])
+    start = base["bytes"]
     positions = array("q", range(start, start + len(extra) - 1))
     main = array("q", base["main"])
     online = array("q", base["online"])
@@ -347,9 +365,9 @@ def with_extra(base, extra):
         main.extend(batch)
     tfs = array("q", base["tfs"])
     tfs.append(start + len(extra))
-    return {"tr": base["tr"] + extra, "tfs": tfs, "main": main,
-            "online": online, "n": base["n"] + 1,
-            "replay": base["replay"], "state": None}
+    return {"files": base["files"] + [extra], "bytes": start + len(extra),
+            "tfs": tfs, "main": main, "online": online,
+            "n": base["n"] + 1, "replay": base["replay"], "state": None}
 
 
 def device_run(binary, enc, train, val, test, kind, opts, know=None,
@@ -368,12 +386,14 @@ def device_run(binary, enc, train, val, test, kind, opts, know=None,
                          "run is replay=%r" % (prepared["replay"], replay))
     if prepared is not None:
         main, online = prepared["main"], prepared["online"]
-        tr, tfs, nfiles = prepared["tr"], prepared["tfs"], prepared["n"]
+        tfs, nfiles = prepared["tfs"], prepared["n"]
+        tr_files, tr_bytes = prepared["files"], prepared["bytes"]
     else:
         main, online = schedule(train, replay)
-        tr, tfs = blob(train)
-        nfiles = len(train)
-    sc, sfs = blob(val + test)
+        tfs, tr_bytes = starts_of(train)
+        tr_files, nfiles = train, len(train)
+    sc_files, sfs, sc_bytes = val + test, starts_of(val + test)[0], \
+        starts_of(val + test)[1]
     t_pack = time.time() - t_pack
     t_write = time.time()
     fd, inp = tempfile.mkstemp(suffix=".in")
@@ -383,11 +403,17 @@ def device_run(binary, enc, train, val, test, kind, opts, know=None,
                             KINDS[kind], flags, max(enc.orders)))
         for k, _h, seed, off, size in enc.tables:
             f.write(struct.pack("<iIii", k, seed, off, size))
-        f.write(struct.pack("<q", len(tr)) + tr)
+        # Written file by file, straight from the list: the bytes go
+        # RAM -> disk once instead of RAM -> RAM -> disk.
+        f.write(struct.pack("<q", tr_bytes))
+        for d in tr_files:
+            f.write(d)
         f.write(struct.pack("<i", nfiles) + tfs.tobytes())
         f.write(struct.pack("<q", len(main)) + main.tobytes())
         f.write(struct.pack("<q", len(online)) + online.tobytes())
-        f.write(struct.pack("<q", len(sc)) + sc)
+        f.write(struct.pack("<q", sc_bytes))
+        for d in sc_files:
+            f.write(d)
         f.write(struct.pack("<i", len(val) + len(test)) + sfs.tobytes())
         f.write(struct.pack("<i", len(val)))
         f.write(struct.pack("<i", len(LAMS)) + array("d", LAMS).tobytes())

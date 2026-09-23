@@ -32,7 +32,8 @@ class PreparedEqualsRebuilt(unittest.TestCase):
         base = G.prepare(FILES)
         tr, tfs = G.blob(FILES)
         main, online = G.schedule(FILES, False)
-        self.assertEqual(base["tr"], tr)
+        self.assertEqual(b"".join(base["files"]), tr)
+        self.assertEqual(base["bytes"], len(tr))
         self.assertEqual(list(base["tfs"]), list(tfs))
         self.assertEqual(list(base["main"]), list(main))
         self.assertEqual(list(base["online"]), list(online))
@@ -45,7 +46,8 @@ class PreparedEqualsRebuilt(unittest.TestCase):
         full = FILES + [EXTRA]
         tr, tfs = G.blob(full)
         main, online = G.schedule(full, False)
-        self.assertEqual(got["tr"], tr)
+        self.assertEqual(b"".join(got["files"]), tr)
+        self.assertEqual(got["bytes"], len(tr))
         self.assertEqual(list(got["tfs"]), list(tfs))
         self.assertEqual(list(got["main"]), list(main))
         self.assertEqual(list(got["online"]), list(online))
@@ -59,9 +61,35 @@ class PreparedEqualsRebuilt(unittest.TestCase):
         second = G.with_extra(base, b"a different file\n")
         self.assertEqual(list(base["main"]),
                          list(G.schedule(FILES, False)[0]))
-        self.assertNotEqual(first["tr"], second["tr"])
+        self.assertNotEqual(first["files"], second["files"])
         self.assertEqual(len(first["main"]), len(base["main"])
                          + len(EXTRA) - 1)
+
+
+class NoSecondCopyOfTheCorpus(unittest.TestCase):
+    """A prepared base adds the schedule, never a second corpus.
+
+    `b"".join(files)` held the same bytes twice -- invisible at 87 MB,
+    the difference between running and swapping at the gigabyte sizes
+    this is aimed at.
+    """
+
+    def test_the_base_references_the_callers_own_file_objects(self):
+        base = G.prepare(FILES)
+        for mine, theirs in zip(FILES, base["files"]):
+            self.assertIs(mine, theirs)
+
+    def test_bytes_is_the_total_without_building_it(self):
+        base = G.prepare(FILES)
+        self.assertEqual(base["bytes"], sum(len(f) for f in FILES))
+        self.assertNotIn("tr", base)
+
+    def test_appending_does_not_copy_the_base_files(self):
+        base = G.prepare(FILES)
+        got = G.with_extra(base, EXTRA)
+        for mine, theirs in zip(FILES, got["files"]):
+            self.assertIs(mine, theirs)
+        self.assertEqual(got["files"][-1], EXTRA)
 
 
 class ReplayAppendsExactly(unittest.TestCase):
