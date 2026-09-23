@@ -129,6 +129,38 @@ def capacity(counts, active_k=64, capacity_slots=256):
     return out
 
 
+def return_bias(drive, ticks_away, capacity_slots=64):
+    """Does a RECENTLY ATTENDED trace come back easier or harder than a
+    fresh one at the same drive?
+
+    ATTENTION.md's refractory window: biology disfavours a location just
+    attended (inhibition of return, Posner & Cohen 1984). Nothing here
+    implements it, and `heat` outliving activation suggests the
+    OPPOSITE sign -- a recently active trace should be easier to
+    revive. Sign first: build nothing until the direction is measured.
+
+    A is cued, wins, then goes quiet for `ticks_away`. Then A and a
+    never-seen B are cued with identical drive. Whose activation and
+    tier come out ahead is the answer.
+    """
+    out = []
+    for away in ticks_away:
+        with S.Store(capacity=capacity_slots, active_k=4) as st:
+            st.put(1, b"a", S.Pathway.DECLARATIVE, 1.0)
+            st.excite(1, drive)
+            st.tick()
+            for _ in range(away):
+                st.tick()
+            st.put(2, b"b", S.Pathway.DECLARATIVE, 1.0)
+            st.excite(1, drive)
+            st.excite(2, drive)
+            st.tick()
+            out.append((away, st.activation(1), st.activation(2),
+                        S.Tier(st.tier(1)).name,
+                        S.Tier(st.tier(2)).name))
+    return out
+
+
 def main(argv):
     if not argv:
         print(__doc__)
@@ -172,6 +204,13 @@ def main(argv):
     print("%6s %10s %12s" % ("cued", "active", "max act"))
     for n, act, peak in capacity([1, 2, 4, 8, 16, 32]):
         print("%6d %10d %12.4f" % (n, act, peak))
+    print()
+    print("RETURN -- a recently attended trace against a fresh one at")
+    print("the same drive. Biology disfavours the revisited one.")
+    print("%6s %12s %12s %10s %10s"
+          % ("away", "revisited", "fresh", "rev tier", "new tier"))
+    for away, a1, a2, t1, t2 in return_bias(2.0, [1, 2, 4, 8]):
+        print("%6d %12.4f %12.4f %10s %10s" % (away, a1, a2, t1, t2))
     return 0
 
 

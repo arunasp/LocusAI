@@ -587,12 +587,6 @@ static double competing_total(const LocusStore *s, LocusPathway pathway)
 /* What a trace is WORTH against the rest, which is what selection reads.
  * The stored activation is never divided -- normalising the state itself
  * would compound every tick. Same shape as Field.step's divisive term. */
-static double effective_against(const LocusStore *s, const Slot *t,
-                                double others)
-{
-    return t->activation / (1.0 + s->cfg.beta * others);
-}
-
 static double effective(const LocusStore *s, const Slot *t, double total)
 {
     double others = total - t->activation;
@@ -800,7 +794,15 @@ void locus_tick(LocusStore *s)
          * and NONE promoted -- a crowd silencing itself, which is the
          * opposite of what lateral inhibition does. Settling gives the
          * seven that fit and refuses the eighth. */
-        double e = effective_against(s, t, won[t->path]);
+        /* SAME SCALE AS THE BOUNDARY, which is the whole point of a
+         * rank rule. This read the winners' accumulated total while
+         * the boundary was the mean of population-relative values --
+         * two denominators, one comparison, and it ARCHIVED THE
+         * STRONGEST TRACE: measured, 3.542 archived while 2.55 stayed
+         * active. `won` belongs to promotion, where the bar rises as
+         * winners are admitted; residency is relative to the
+         * population. */
+        double e = effective(s, t, competing_total(s, t->path));
         if (t->tier == LOCUS_TIER_EPISODIC && promoted[i])
             t->tier = LOCUS_TIER_ACTIVE;
         else if (spread && e < boundary &&

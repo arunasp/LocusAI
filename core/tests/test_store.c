@@ -344,6 +344,33 @@ static int focal_after(double salience, double bg_excite)
     return focal;
 }
 
+/* The strongest trace in a population cannot be the one archived. A
+ * version of the rank rule compared each trace against the WINNERS'
+ * accumulated total while the boundary was the mean of
+ * POPULATION-relative values -- two denominators, one comparison --
+ * and it archived a trace at 3.542 while keeping one at 2.55. All 94
+ * checks passed, so the scale was unbound. */
+static void test_the_strongest_trace_keeps_its_slot(void)
+{
+    LocusConfig cfg = locus_config_default();
+    cfg.capacity = 64;
+    cfg.active_k = 4;
+    LocusStore *s = locus_store_create(&cfg);
+    locus_put(s, 1, LOCUS_PATH_DECLARATIVE, "a", 1, 1.0);
+    locus_excite(s, 1, 2.0);
+    locus_tick(s);
+    locus_tick(s);
+    locus_put(s, 2, LOCUS_PATH_DECLARATIVE, "b", 1, 1.0);
+    locus_excite(s, 1, 2.0);
+    locus_excite(s, 2, 2.0);
+    locus_tick(s);
+    ok(locus_trace_activation(s, 1) > locus_trace_activation(s, 2),
+       "the setup no longer has a strongest trace to check");
+    ok(locus_trace_tier(s, 1) != LOCUS_TIER_ARCHIVE,
+       "the STRONGEST trace was archived while a weaker one stayed");
+    locus_store_destroy(s);
+}
+
 static void test_a_salient_background_event_breaks_through(void)
 {
     /* A LOUD background trace takes nothing: without salience the pools
@@ -684,6 +711,7 @@ int main(void)
     test_prefetch_advisory();
     test_lease_blocks_eviction();
     test_residency_is_relative_to_the_population();
+    test_the_strongest_trace_keeps_its_slot();
     test_a_salient_background_event_breaks_through();
     test_instinct_sits_outside_the_capacity_window();
     test_a_non_finite_input_is_refused_at_every_entry();
