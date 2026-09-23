@@ -101,8 +101,13 @@ exists and scores 1.57–2.01 bits per byte worse than normalised counts.
 A per-input form (a separate error per input, a metaplastic rate of 1/n,
 no soft bounds or homeostasis) equals normalised counts exactly; which of
 those three differences accounts for the gap is not separated. Structural
-plasticity and the sleep phase are
-open.
+plasticity is open. The sleep phase exists in part:
+`py/locus/knowledge.py` tags what reading changed, credits each tag with
+the outcomes that followed it, captures the credited rows into a new
+generation and lapses the rest, and sleeps by itself once transient
+pressure crosses its threshold. Replay as attractor re-settling and
+global downscaling are open, and downscaling is still the one operation
+that must be a batch sweep off the active path.
 
 Open question, unresolved: whether episodic and procedural replay share
 one buffer or need two. They want different sampling criteria — diverse
@@ -110,15 +115,27 @@ and important versus literally repeated.
 
 ## 5. Substrate
 
-- **A compute backend.** Nothing has run against a compute device. The
-  open question is which backend actually serves these kernels on the
-  target hardware, which is not answered by other software running on the
-  same device through a different stack.
+- **A compute backend.** Which backend actually serves these kernels on
+  the target hardware, which is not answered by other software running
+  on the same device through a different stack.
 - **Hand-written kernels**, only where profiling shows a hot loop.
   Deliberately deferred until there is something measured to optimise.
 
 Depends on: stages 1–4 being settled enough that the kernel shapes stop
 changing.
+
+**Status:** answered. ROCm/HIP serves them on gfx1100 through the
+project's own GPU container: `gpu/learn_device.cpp` runs the whole byte
+learner on the device (12 s against 10 min 15 s for the first Python
+form), and `gpu/exp_field_step.cpp` and `gpu/exp_field_sparse.cpp` run
+the field step, the sparse form 7.6–98x the dense one. Two device
+limits found by running a 134 MB corpus, both fixed: peak VRAM was
+linear in events and starved the driver, and `score` asked for more work
+items than a 32-bit dispatch holds. Hand-written kernels stay deferred;
+what profiling says now is that precision is the lever on this card --
+fp32 arithmetic is 33.4x fp64 but only 1.85x per value streamed
+(`make fp-rate`), so the bandwidth-bound learner would gain far less
+than the arithmetic-bound gated readout.
 
 ## 6. Beyond the memory substrate
 
