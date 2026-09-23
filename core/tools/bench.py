@@ -28,9 +28,13 @@ TASKS = {
     "score-english": (
         "make prompt KNOW=build/know/english PROMPTARGS=--score",
         r"reader\s+([0-9.]+) bits per byte"),
+    # The figure must be a RESULT, not a timing: this task's figure was
+    # its own wall time, so every run tripped the changed-figure alarm
+    # and would have trained us to ignore it. The count of experiments
+    # that ran is stable unless the set itself changes.
     "experiments": (
         "make experiments",
-        r"total wall ([0-9.]+) s"),
+        r"child CPU [0-9.]+ s on ([0-9]+) processes"),
     "know-small": (
         "make know CORPUS=build/corpus-480e191 KNOW=build/know/bench-small",
         r"test ([0-9.]+) bits per byte"),
