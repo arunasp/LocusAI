@@ -39,8 +39,14 @@ REPO = os.path.dirname(CORE)
 CODE = (".py", ".c", ".h", ".cpp")
 SKIP = ("/build/", "/.venv/", "/__pycache__/", "/.git/", "/node_modules/",
         "/.rocm-include/", "/mock/", "/hf/", "/data/")
+# A note DECLARES a value when it says what the value IS -- initial
+# state, an open question, measured, derived, a bound. "default" was in
+# this list and had to come out: almost every docstring mentioning a
+# default satisfied it, so "(default 64)" counted as a declaration when
+# it only documents the number rather than saying anything about where
+# it came from or what would settle it.
 FLAGS = ("initial", "open question", "not tuned", "placeholder", "until",
-         "for now", "arbitrary", "default", "measured", "derived",
+         "for now", "arbitrary", "measured", "derived",
          "chosen so", "bound", "limit")
 DEFINE = re.compile(r"^\s*#define\s+([A-Za-z_]\w*)\s+"
                     r"\(?(-?\d+\.?\d*(?:e-?\d+)?)\)?\s*(?:/\*|//|$)")
@@ -66,9 +72,35 @@ def sources(root, include_vendor=False):
     return out
 
 
-def near(lines, lineno, span=5):
-    lo = max(0, lineno - span - 1)
-    return " ".join(lines[lo:lineno + 1]).lower()
+def note(lines, lineno, extra=""):
+    """The comment that BELONGS to the value on `lineno`.
+
+    Attribution used to be proximity -- any of the five lines above --
+    and proximity is not attachment. A note written for one constant
+    silently declared a DIFFERENT one five lines away: adding a comment
+    to `PROGRESS_SECONDS` in tools/hf_data.py marked `_request(tries=5)`
+    as declared and dropped the undeclared count by one for no reason.
+    A ratchet whose floor moves by accident is worse than no ratchet.
+
+    So: the trailing comment on the value's own line, plus the
+    CONTIGUOUS comment block immediately above it -- no blank line, no
+    code line, in between -- plus `extra` for a function's own
+    docstring, which is where a default's reasoning is usually written.
+    """
+    text = [extra, lines[lineno - 1]]
+    i = lineno - 2
+    while i >= 0:
+        stripped = lines[i].strip()
+        if stripped.startswith("#") or stripped.startswith("//"):
+            text.append(stripped)
+        elif stripped.startswith("*") or stripped.startswith("/*"):
+            text.append(stripped)
+            if stripped.startswith("/*"):
+                break
+        else:
+            break
+        i -= 1
+    return " ".join(text).lower()
 
 
 def py_constants(path, src):
@@ -84,16 +116,17 @@ def py_constants(path, src):
                 and isinstance(n.value.value, (int, float))
                 and not isinstance(n.value.value, bool)):
             rows.append((path, n.lineno, n.targets[0].id, n.value.value,
-                         any(f in near(lines, n.lineno) for f in FLAGS)))
+                         any(f in note(lines, n.lineno) for f in FLAGS)))
         if isinstance(n, ast.FunctionDef) and n.args.defaults:
             args = n.args.args[-len(n.args.defaults):]
             for a, dv in zip(args, n.args.defaults):
                 if (isinstance(dv, ast.Constant)
                         and isinstance(dv.value, (int, float))
                         and not isinstance(dv.value, bool)):
+                    doc = ast.get_docstring(n) or ""
                     rows.append((path, n.lineno,
                                  "%s(%s)" % (n.name, a.arg), dv.value,
-                                 any(f in near(lines, n.lineno, 10)
+                                 any(f in note(lines, n.lineno, doc)
                                      for f in FLAGS)))
     return rows
 
@@ -105,7 +138,7 @@ def c_constants(path, src):
             m = pat.match(line)
             if m:
                 rows.append((path, i, m.group(1), m.group(2),
-                             any(f in near(lines, i) for f in FLAGS)))
+                             any(f in note(lines, i) for f in FLAGS)))
     return rows
 
 

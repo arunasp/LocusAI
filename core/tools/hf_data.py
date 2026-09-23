@@ -36,6 +36,15 @@ HUB = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
 ROWS = os.environ.get("HF_ROWS_ENDPOINT",
                       "https://datasets-server.huggingface.co")
 PAGE = 100                      # rows per request, the API's maximum
+# One chunk is the memory ceiling for a file fetch, whatever the file's
+# size; 1 MiB is large enough that the syscall count is irrelevant next
+# to the transfer and small enough to be invisible in RSS.
+CHUNK = 1 << 20
+# How often the fetch says where it is. An initial value, not measured:
+# the open question is whether progress should be reported on TIME at
+# all or on bytes transferred, which is what a reader actually wants to
+# compare against the published size.
+PROGRESS_SECONDS = 10
 
 
 def _request(url, headers=None, tries=5):
@@ -90,15 +99,41 @@ def fetch_file(repo, entry, dest, max_bytes, revision="main"):
     full = size_of(entry)
     truncated = full > max_bytes
     headers = {"Range": "bytes=0-%d" % (max_bytes - 1)} if truncated else {}
-    with _request(url, headers) as r:
-        data = r.read()
     out = os.path.join(dest, path)
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    with open(out, "wb") as fh:
-        fh.write(data)
-    rec = {"path": path, "published_size": full, "bytes": len(data),
+    # COMMITTED IN CHUNKS, never accumulated whole. `r.read()` held the
+    # entire slice in memory and wrote once at the end, so a 512 MiB
+    # prefix sat as 512 MiB of RSS while the file on disk stayed at its
+    # old size -- indistinguishable from a stalled fetch, and unbounded
+    # in the one dimension that matters, since the published files here
+    # run to 2.2 GB. Each chunk is written and hashed as it arrives, so
+    # memory is one chunk and the partial download is on disk where its
+    # growth can be watched.
+    #
+    # Written to `out + ".part"` and renamed only on success: a truncated
+    # or failed transfer must never be left under the real name, where
+    # the next run would read it as a complete corpus.
+    digest = hashlib.sha256()
+    got = 0
+    part = out + ".part"
+    last = time.time()
+    with _request(url, headers) as r, open(part, "wb") as fh:
+        while True:
+            chunk = r.read(CHUNK)
+            if not chunk:
+                break
+            fh.write(chunk)
+            digest.update(chunk)
+            got += len(chunk)
+            now = time.time()
+            if now - last >= PROGRESS_SECONDS:
+                print("  %-40s %6.1f MB" % (path, got / 2**20),
+                      flush=True)
+                last = now
+    os.replace(part, out)
+    rec = {"path": path, "published_size": full, "bytes": got,
            "truncated": truncated,
-           "sha256": hashlib.sha256(data).hexdigest()}
+           "sha256": digest.hexdigest()}
     oid = (entry.get("lfs") or {}).get("oid")
     if not truncated and oid:
         rec["verified"] = rec["sha256"] == oid
