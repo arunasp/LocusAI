@@ -27,14 +27,6 @@ static int usable(double v)
  * from anything but convenience. */
 #define LOCUS_LABILE_TICKS 2
 
-/* Activation below which an unpinned declarative trace demotes a tier.
- * An INITIAL VALUE. The open question is whether residency should be a
- * threshold at all rather than a RANK against the current distribution:
- * a fixed floor means something different in a store of 72,886 units
- * and one of 191,912, which is the same defect measured in the sleep
- * trigger (see doc/core/ROADMAP.md standing constraints). */
-#define LOCUS_DEMOTE_FLOOR 0.05
-
 /* Heat decays slower than activation: usage history outlives the moment.
  * The RATIO is the claim and it is structural; the 0.25 itself is an
  * INITIAL VALUE and the open question is what sets the separation
@@ -638,12 +630,40 @@ void locus_tick(LocusStore *s)
             s->stats.labile_lost++;
         }
 
-        if (t->pinned)
-            continue;
+    }
 
+    /* RESIDENCY IS A RANK, NOT A LEVEL. This was a fixed floor of 0.05,
+     * which means something different in a store of 72,886 units and one
+     * of 191,912 -- the same size-dependence measured in the sleep
+     * trigger, where the interval between consolidations grows 57x
+     * across the learning curve. A trace is not weak in the abstract; it
+     * is weak COMPARED WITH WHAT IT COMPETES WITH, which is the header's
+     * own position that capacity is interference rather than bytes.
+     *
+     * So the boundary is the mean activation of the unpinned traces that
+     * are still resident -- computed from the store each tick, carrying
+     * no constant of its own, and moving with the population the way
+     * synaptic scaling normalises against a neuron's own inputs. An
+     * empty population demotes nothing, since a mean of nothing is not a
+     * boundary. */
+    double sum = 0.0;
+    int live = 0;
+    for (int i = 0; i < s->capacity; i++) {
+        const Slot *t = &s->slots[i];
+        if (t->used && !t->pinned && t->tier != LOCUS_TIER_ARCHIVE) {
+            sum += t->activation;
+            live++;
+        }
+    }
+    double boundary = live ? sum / live : 0.0;
+
+    for (int i = 0; i < s->capacity; i++) {
+        Slot *t = &s->slots[i];
+        if (!t->used || t->pinned)
+            continue;
         if (t->activation >= 1.0 && t->tier == LOCUS_TIER_EPISODIC)
             t->tier = LOCUS_TIER_ACTIVE;
-        else if (t->activation < LOCUS_DEMOTE_FLOOR &&
+        else if (live && t->activation < boundary &&
                  t->tier != LOCUS_TIER_ARCHIVE && t->leases == 0)
             t->tier = LOCUS_TIER_ARCHIVE;
     }

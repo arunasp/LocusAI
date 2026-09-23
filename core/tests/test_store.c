@@ -237,6 +237,53 @@ static void test_lease_blocks_eviction(void)
  * in activation or heat is unrecoverable and silent -- comparisons
  * against it are all false, so the trace neither wins nor loses
  * selection predictably, and the store is persistent state. */
+/* Residency is a RANK against the traces a trace competes with, not a
+ * fixed activation level. Both cases below are decided differently by a
+ * fixed floor of 0.05, which is what this replaced. */
+static void test_residency_is_relative_to_the_population(void)
+{
+    LocusConfig cfg = locus_config_default();
+    cfg.capacity = 8;
+    cfg.active_k = 4;
+    cfg.decay = 0.99;   /* barely decay: the comparison is the point */
+    LocusStore *s = locus_store_create(&cfg);
+
+    /* THREE STRONG, ONE WEAK -- and every one of them far above 0.05,
+     * so the old fixed floor would archive nothing at all. */
+    for (int k = 1; k <= 3; k++) {
+        locus_put(s, k, LOCUS_PATH_DECLARATIVE, "s", 1, 0.5);
+        locus_excite(s, k, 5.0);
+    }
+    locus_put(s, 9, LOCUS_PATH_DECLARATIVE, "w", 1, 0.5);
+    locus_excite(s, 9, 0.5);
+    locus_tick(s);
+    ok(locus_trace_tier(s, 9) == LOCUS_TIER_ARCHIVE,
+       "a trace far below its population stayed resident");
+    ok(locus_trace_tier(s, 1) != LOCUS_TIER_ARCHIVE,
+       "a strong trace was archived");
+    locus_store_destroy(s);
+
+    /* ALL QUIET AND EQUAL, every activation BELOW the old 0.05 floor,
+     * which would have archived the whole store. Nobody is below the
+     * mean, so nobody is outcompeted, so nobody is archived. */
+    cfg.decay = 0.5;    /* decay them together, far below 0.05 */
+    s = locus_store_create(&cfg);
+    for (int k = 1; k <= 4; k++)
+        locus_put(s, k, LOCUS_PATH_DECLARATIVE, "q", 1, 0.5);
+    for (int i = 0; i < 6; i++)
+        locus_tick(s);
+    ok(locus_trace_activation(s, 1) < 0.05,
+       "the quiet store is not actually quiet -- the test proves "
+       "nothing about the old floor");
+    int archived = 0;
+    for (int k = 1; k <= 4; k++)
+        if (locus_trace_tier(s, k) == LOCUS_TIER_ARCHIVE)
+            archived++;
+    ok(archived == 0,
+       "a uniformly quiet store archived itself wholesale");
+    locus_store_destroy(s);
+}
+
 static void test_a_non_finite_input_is_refused_at_every_entry(void)
 {
     LocusConfig cfg = locus_config_default();
@@ -539,6 +586,7 @@ int main(void)
     test_tagging_and_capture();
     test_prefetch_advisory();
     test_lease_blocks_eviction();
+    test_residency_is_relative_to_the_population();
     test_a_non_finite_input_is_refused_at_every_entry();
     test_promotion_needs_a_recurring_winner_set();
     test_kwta_respects_incompatibility();
