@@ -253,4 +253,9 @@ Present state:
   cannot carry a cost (construction fails if an act is both forbidden
   and priced, since a price invites the reading that evidence buys it).
   INGEST is still open: the costs and the set are passed in by whoever
-  builds the Constitution.
+  builds the Constitution, AND NOTHING IN A RUNNING PATH BUILDS ONE.
+  `make audit` reports it: Constitution, Dispatcher, DecisionTrace and
+  AssociativeGraph are constructed only by tests, so all four mechanisms
+  above are DECLARED and tested rather than ACTIVE. Ingest is what would
+  change that -- a source of costs and of the categorical set, read at
+  construction by whatever assembles the system.

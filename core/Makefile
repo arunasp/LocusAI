@@ -414,6 +414,13 @@ fp-rate: ## Measure fp32 vs fp64 arithmetic and streaming rate
 bench: ## Time the real tasks and append to build/bench/history.csv
 	$(PYTHON3) tools/bench.py $(BUILD)/bench $(BENCHTASKS)
 
+# Two standing rules, checked rather than remembered: no static value
+# where biology has dynamics (and any that stays is flagged as initial
+# state), and a mechanism nothing constructs is DECLARED, not ACTIVE.
+# Reports only; the right response to most findings is a decision.
+audit: ## Report unflagged constants and inert code in core/py/locus
+	$(PYTHON3) tools/audit.py $(AUDITARGS)
+
 # Long jobs exceed a tool call, and polling them through the cicd_runner
 # coordinator blocks its single event loop. Start them detached in the
 # project container with ONE call, then read build/$(JOB).log through the
