@@ -1,0 +1,6 @@
+locusai-worker:latest
+# Pinned per-project worker (cicd_runner reads the first line only).
+# Differs from the shared `cicd-worker` by one package, g++, which
+# `make caps-mock` needs -- 19 mocked-HIP scenarios that otherwise SKIP
+# inside a green pipeline. Built from tools/worker/Dockerfile; the
+# shared image stays bare by design.
