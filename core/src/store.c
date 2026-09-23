@@ -48,6 +48,13 @@ typedef struct {
     LocusPathway path;
     double activation;
     double heat;
+    /* Drive that arrived SINCE THE LAST TICK. Selection reads this, not
+     * accumulated activation: a unit that is not being driven now does
+     * not hold a slot. Measured cause -- the active set persisted 8
+     * ticks with no input while reading moves on every tick, so a
+     * larger store accumulated a larger active population and the
+     * competition grew with it. Cleared at the end of every tick. */
+    double drive;
     double tag;
     int tag_ticks;
     int reps;
@@ -296,6 +303,11 @@ int locus_put(LocusStore *s, LocusKey key, LocusPathway path,
     t->len = len;
     t->path = path;
     t->activation = salience;
+    /* Placing a trace IS an input event, so it counts as drive this
+     * tick exactly as activation, heat and tag do. Without it a trace
+     * created and never excited could not win a slot in the tick that
+     * created it. */
+    t->drive = salience;
     t->heat = salience;
     t->tag = salience;
     t->tag_ticks = s->cfg.capture_window;
@@ -443,7 +455,13 @@ void locus_note_salient(LocusStore *s, LocusKey key, double strength)
 
     int origin = find(s, key);
     if (origin >= 0) {
+        /* A salient event IS input, so it drives this tick. Without
+         * this the interrupt ran BACKWARDS under drive-based
+         * selection: tone coupled the pools and raised the bar, while
+         * the salient trace itself gained nothing, so the event that
+         * should have broken through lost its own slot instead. */
         s->slots[origin].activation += strength;
+        s->slots[origin].drive += strength;
         s->slots[origin].heat += strength;
         s->slots[origin].tag = strength;
         s->slots[origin].tag_ticks = s->cfg.capture_window;
@@ -458,6 +476,7 @@ void locus_note_salient(LocusStore *s, LocusKey key, double strength)
         if (t->tag_ticks <= 0 || t->tag < s->cfg.capture_floor)
             continue;
         t->activation += strength * s->cfg.capture_gain;
+        t->drive += strength * s->cfg.capture_gain;
         t->heat += strength * s->cfg.capture_gain;
         s->stats.captures++;
     }
@@ -533,7 +552,9 @@ int locus_excite(LocusStore *s, LocusKey key, double amount)
      * and gives the early advantage, heat decays slowly and gives the
      * later cost. Both rates already existed. */
     double heat = s->slots[i].heat;
-    s->slots[i].activation += amount / (1.0 + (heat > 0.0 ? heat : 0.0));
+    double got = amount / (1.0 + (heat > 0.0 ? heat : 0.0));
+    s->slots[i].activation += got;
+    s->slots[i].drive += got;
     return 0;
 }
 
@@ -548,6 +569,7 @@ int locus_attend(LocusStore *s, LocusKey key, double amount)
      * the response happened and the record of it is what the
      * unsolicited path reads. */
     s->slots[i].activation += amount;
+    s->slots[i].drive += amount;
     return 0;
 }
 
@@ -781,7 +803,9 @@ void locus_tick(LocusStore *s)
                 continue;
             if (t->tier == LOCUS_TIER_ARCHIVE || done[t->path])
                 continue;
-            if (best < 0 || t->activation > s->slots[best].activation)
+            if (t->drive <= 0.0)
+                continue;   /* not being driven now: no slot */
+            if (best < 0 || t->drive > s->slots[best].drive)
                 best = i;
         }
         if (best < 0)
@@ -795,13 +819,13 @@ void locus_tick(LocusStore *s)
         for (int j = 0; j < 3; j++)
             if (j != (int)p)
                 against += s->phasic * won[j];
-        if (b->activation / (1.0 + s->cfg.beta * against) < 1.0) {
+        if (b->drive / (1.0 + s->cfg.beta * against) < 1.0) {
             /* This pathway is full; the others are still open. */
             done[p] = 1;
             continue;
         }
         promoted[best] = 1;
-        won[p] += b->activation;
+        won[p] += b->drive;
     }
 
     double sum = 0.0, lo = 0.0, hi = 0.0;
@@ -853,14 +877,21 @@ void locus_tick(LocusStore *s)
          * winners are admitted; residency is relative to the
          * population. */
         double e = effective(s, t, competing_total(s, t->path));
-        if (t->tier == LOCUS_TIER_EPISODIC && promoted[i])
+        if (promoted[i])
             t->tier = LOCUS_TIER_ACTIVE;
+        else if (t->tier == LOCUS_TIER_ACTIVE && t->drive <= 0.0)
+            /* THE SLOT IS RELEASED, NOT THE MEMORY. Undriven means the
+             * task has moved on; the trace keeps its activation, its
+             * heat and its tier above archive. */
+            t->tier = LOCUS_TIER_EPISODIC;
         else if (spread && e < boundary &&
                  t->tier != LOCUS_TIER_ARCHIVE && t->leases == 0)
             t->tier = LOCUS_TIER_ARCHIVE;
     }
     enforce_kwta(s);
     remember_active_set(s);
+    for (int i = 0; i < s->capacity; i++)
+        s->slots[i].drive = 0.0;
 }
 
 void locus_stats(const LocusStore *s, LocusStats *out)

@@ -22,6 +22,23 @@ Built: `Field.cycle(fast=7)` — one slow period running seven fast
 updates, the theta/gamma nesting ratio. `Cycle.task_step` runs
 settle → decide → learn → orient once per period.
 
+AND THE SLOT IS WON PER PERIOD, not held. Selection reads the drive
+that arrived since the last tick, so a unit not being driven now does
+not hold a slot — the trace keeps its activation, its heat and its tier
+above archive, but the slot is released. Working memory is not
+sustained firing: a subset fires when input arrives and goes dormant
+while the information persists in short-term synaptic weights, and
+read-out is a non-specific signal that fires the facilitated units only
+(Mongillo et al. 2008; Stokes 2015).
+
+Measured, and it is why this changed: the active set persisted 8 ticks
+with no input while reading moves on every tick, so a larger store
+accumulated a larger active population and competition grew with it. On
+English held-out text the attended reader improved from +2.30 to +1.11
+bits against the plain reader, and the direction across store size
+REVERSED — more room now helps (2.36 units active at 256 slots, 2.71 at
+4096) where before it hurt.
+
 ## 2. The capacity window — items, not bytes
 
 Four or so items, and the limit is set by mutual interference, not by
@@ -169,11 +186,20 @@ drive:
   away 4   revisited 1.6853   fresh 1.7000   revisited ARCHIVE
   away 8   revisited 1.3885   fresh 1.7000   revisited ARCHIVE
 
-Facilitation for two ticks, then the revisited trace is worse off than
-a fresh one and loses its slot. The crossover needs no window and no
-timer: activation decays fast and gives the early advantage, heat
-decays slowly and gives the later cost, and both rates already
-existed.
+REGRESSED WHEN SELECTION MOVED TO DRIVE, recorded rather than hidden:
+the revisited trace now loses its slot at EVERY lag (EPISODIC at 1, 2,
+4 and 8 ticks), because its drive is depressed while selection no
+longer reads activation — which is where the early advantage lives. The
+biphasic shape survives in activation alone (2.1107 against 1.7000 at
+one tick, 1.3885 against 1.7000 at eight).
+
+So the depression has the wrong sign for the SLOW variable, which is
+exactly what the research says: in Mongillo's model the FAST variable
+(presynaptic resources, replenishing in ~200 ms) depresses and the SLOW
+one (calcium, ~1.5 s) facilitates. Heat is the slow variable here and
+it currently depresses. Restoring the shape needs heat to facilitate
+and a separate fast-depleting term to carry the depression — a second
+variable, not a tuning change.
 
 ## What this means for the input path
 
