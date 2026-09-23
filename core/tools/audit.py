@@ -45,8 +45,15 @@ SKIP = ("/build/", "/.venv/", "/__pycache__/", "/.git/", "/node_modules/",
 # default satisfied it, so "(default 64)" counted as a declaration when
 # it only documents the number rather than saying anything about where
 # it came from or what would settle it.
+# "neutral" earns its place beside the others: a value that is the
+# identity of its operation -- a rate of 1.0 that scales nothing, a
+# threshold of 0.0 that excludes nothing, an option off unless asked --
+# is not a tuned number at all, and saying so is as complete an answer
+# as "measured" or "a bound". It was used as a category in the substrate
+# pass before it was a flag here, which is why that pass had to lean on
+# other words in the same note.
 FLAGS = ("initial", "open question", "not tuned", "placeholder", "until",
-         "for now", "arbitrary", "measured", "derived",
+         "for now", "arbitrary", "measured", "derived", "neutral",
          "chosen so", "bound", "limit")
 DEFINE = re.compile(r"^\s*#define\s+([A-Za-z_]\w*)\s+"
                     r"\(?(-?\d+\.?\d*(?:e-?\d+)?)\)?\s*(?:/\*|//|$)")
