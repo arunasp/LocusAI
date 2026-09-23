@@ -73,6 +73,37 @@ is not certain it is omitted rather than guessed.
   current uncertainty, not a constant; the basis for the `adaptive`
   outcome mixture.
 
+## Attention
+
+- VanRullen, R. & Koch, C. (2003). Is perception discrete or
+  continuous? *Trends in Cognitive Sciences*, 7, 207-213. - attention
+  samples rhythmically rather than continuously, so the window is a
+  period and not a span.
+- Landau, A. N. & Fries, P. (2012). Attention samples stimuli
+  rhythmically. *Current Biology*, 22, 1000-1004. - the ~7 Hz sampling
+  rate behind `Field.cycle(fast=7)`.
+- Lisman, J. E. & Idiart, M. A. (1995). Storage of 7 +/- 2 short-term
+  memories in oscillatory subcycles. *Science*, 267, 1512-1515. - gamma
+  cycles nested in theta, the ratio the fast/slow split takes.
+- Cowan, N. (2001). The magical number 4 in short-term memory.
+  *Behavioral and Brain Sciences*, 24, 87-114. - capacity counted in
+  items limited by interference, which is what `active_k` bounds.
+- Desimone, R. & Duncan, J. (1995). Neural mechanisms of selective
+  visual attention. *Annual Review of Neuroscience*, 18, 193-222. -
+  biased competition: the bias tilts a competition rather than gating
+  it, which is why `Cycle.orient` derives a bias and never sets the
+  winner.
+- Hasson, U., Yang, E., Vallines, I., Heeger, D. J. & Rubin, N. (2008).
+  A hierarchy of temporal receptive windows in human cortex. *Journal
+  of Neuroscience*, 28, 2539-2550. - integration length as a property
+  of hierarchical level, not a per-level parameter.
+- Posner, M. I. & Cohen, Y. (1984). Components of visual orienting. In
+  *Attention and Performance X*. Erlbaum. - inhibition of return.
+- Raymond, J. E., Shapiro, K. L. & Arnell, K. M. (1992). Temporary
+  suppression of visual processing in an RSVP task. *Journal of
+  Experimental Psychology: HPP*, 18, 849-860. - the attentional blink
+  as consolidation occupancy rather than a rule.
+
 ## Memory systems, consolidation and reconsolidation
 
 - McClelland, J. L., McNaughton, B. L. & O'Reilly, R. C. (1995). Why
